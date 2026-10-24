@@ -194,6 +194,11 @@ fn main() {
                 }
                 return;
             }
+            "lock-now" => {
+                let session_id = lock::get_active_session_id();
+                lock::lock_session(session_id);
+                return;
+            }
             "install-service" => {
                 match service::install_service() {
                     Ok(_) => println!("[OK] Windows 插卡解锁服务安装成功并已启动！"),

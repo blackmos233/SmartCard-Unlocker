@@ -8,7 +8,6 @@ pub const VK_BACK: u8 = 0x08;
 pub const VK_RETURN: u8 = 0x0D;
 pub const VK_SPACE: u8 = 0x20;
 pub const KEYEVENTF_KEYUP: u32 = 0x0002;
-pub const KEYEVENTF_UNICODE: u32 = 0x0004;
 
 const DESKTOP_SWITCHDESKTOP: u32 = 0x0100;
 const TOKEN_DUPLICATE: u32 = 0x0002;
@@ -106,12 +105,25 @@ unsafe extern "system" {
     fn OpenInputDesktop(dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> usize;
     fn CloseDesktop(hDesktop: usize) -> i32;
     fn keybd_event(bVk: u8, bScan: u8, dwFlags: u32, dwExtraInfo: usize);
+    fn mouse_event(dwFlags: u32, dx: u32, dy: u32, dwData: u32, dwExtraInfo: usize);
     fn SendInput(cInputs: u32, pInputs: *const INPUT, cbSize: i32) -> u32;
+    fn MapVirtualKeyW(uCode: u32, uMapType: u32) -> u32;
+    fn GetThreadDesktop(dwThreadId: u32) -> usize;
+    fn GetUserObjectInformationW(
+        hObj: usize,
+        nIndex: i32,
+        pvInfo: *mut std::ffi::c_void,
+        nLength: u32,
+        lpnLengthNeeded: *mut u32,
+    ) -> i32;
+    fn OpenDesktopW(lpszDesktop: *const u16, dwFlags: u32, fInherit: i32, dwDesiredAccess: u32) -> usize;
+    fn SetThreadDesktop(hDesktop: usize) -> i32;
 }
 
 #[link(name = "wtsapi32")]
 unsafe extern "system" {
     fn WTSGetActiveConsoleSessionId() -> u32;
+    fn WTSQueryUserToken(SessionId: u32, phToken: *mut usize) -> i32;
     fn WTSQuerySessionInformationW(
         hServer: usize,
         SessionId: u32,
@@ -132,12 +144,10 @@ unsafe extern "system" {
 #[link(name = "kernel32")]
 unsafe extern "system" {
     fn GetCurrentProcess() -> usize;
+    fn GetCurrentThreadId() -> u32;
     fn CloseHandle(hObject: usize) -> i32;
     fn GetLastError() -> u32;
     fn OpenProcess(dwDesiredAccess: u32, bInheritHandle: i32, dwProcessId: u32) -> usize;
-    fn LoadLibraryW(lpLibFileName: *const u16) -> usize;
-    fn GetProcAddress(hModule: usize, lpProcName: *const i8) -> *mut std::ffi::c_void;
-    fn FreeLibrary(hLibModule: usize) -> i32;
 }
 
 #[link(name = "advapi32")]
@@ -262,25 +272,112 @@ pub fn is_session_locked(session_id: u32) -> bool {
     }
 }
 
-type WTSLockWorkStationFn = unsafe extern "system" fn(usize, u32) -> i32;
+fn spawn_process_in_session(token: usize, cmd: &str, desktop: &str) -> bool {
+    let mut cmd_w = to_wide(cmd);
+    let mut desk_w = to_wide(desktop);
+    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
+    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+    si.lpDesktop = desk_w.as_mut_ptr();
+    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
+
+    let res = unsafe {
+        CreateProcessAsUserW(
+            token,
+            ptr::null(),
+            cmd_w.as_mut_ptr(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            0,
+            0x00000010, // CREATE_NEW_CONSOLE
+            ptr::null_mut(),
+            ptr::null(),
+            &si,
+            &mut pi,
+        )
+    };
+
+    if res != 0 {
+        unsafe {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+        return true;
+    }
+
+    // Fallback: CreateProcessWithTokenW
+    let res2 = unsafe {
+        CreateProcessWithTokenW(
+            token,
+            0,
+            ptr::null(),
+            cmd_w.as_mut_ptr(),
+            0x00000010,
+            ptr::null_mut(),
+            ptr::null(),
+            &si,
+            &mut pi,
+        )
+    };
+
+    if res2 != 0 {
+        unsafe {
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+        }
+        true
+    } else {
+        false
+    }
+}
 
 pub fn lock_session(session_id: u32) -> bool {
-    let mut wts_ok = false;
-    unsafe {
-        let mod_name = to_wide("wtsapi32.dll");
-        let h_mod = LoadLibraryW(mod_name.as_ptr());
-        if h_mod != 0 {
-            let proc_name = std::ffi::CString::new("WTSLockWorkStation").unwrap();
-            let proc = GetProcAddress(h_mod, proc_name.as_ptr());
-            if !proc.is_null() {
-                let func: WTSLockWorkStationFn = std::mem::transmute(proc);
-                wts_ok = func(0, session_id) != 0;
-            }
-            FreeLibrary(h_mod);
+    enable_privilege("SeDebugPrivilege");
+    enable_privilege("SeImpersonatePrivilege");
+    enable_privilege("SeAssignPrimaryTokenPrivilege");
+
+    // 1. If we are already running in the target session, LockWorkStation works directly
+    let cur_session = unsafe { WTSGetActiveConsoleSessionId() };
+    if cur_session == session_id {
+        if unsafe { LockWorkStation() != 0 } {
+            return true;
         }
     }
-    let u32_ok = unsafe { LockWorkStation() != 0 };
-    wts_ok || u32_ok
+
+    // 2. From Session 0 service: Query user token and spawn lock process into Session 1
+    let mut h_user_token = 0usize;
+    if unsafe { WTSQueryUserToken(session_id, &mut h_user_token) } != 0 {
+        let ok = spawn_process_in_session(h_user_token, "rundll32.exe user32.dll,LockWorkStation", "WinSta0\\Default");
+        unsafe { CloseHandle(h_user_token); }
+        if ok {
+            return true;
+        }
+    }
+
+    // 3. Fallback: Duplicate winlogon.exe token in target session and spawn lock
+    if let Some(winlogon_pid) = find_winlogon_pid(session_id) {
+        unsafe {
+            let h_proc = OpenProcess(PROCESS_QUERY_INFORMATION, 0, winlogon_pid);
+            if h_proc != 0 {
+                let mut h_token = 0usize;
+                if OpenProcessToken(h_proc, TOKEN_DUPLICATE | TOKEN_ASSIGN_PRIMARY | TOKEN_QUERY, &mut h_token) != 0 {
+                    let mut h_dup = 0usize;
+                    if DuplicateTokenEx(h_token, MAXIMUM_ALLOWED, ptr::null_mut(), SECURITY_IDENTIFICATION, TOKEN_PRIMARY, &mut h_dup) != 0 {
+                        let ok = spawn_process_in_session(h_dup, "rundll32.exe user32.dll,LockWorkStation", "WinSta0\\Default");
+                        CloseHandle(h_dup);
+                        CloseHandle(h_token);
+                        CloseHandle(h_proc);
+                        if ok {
+                            return true;
+                        }
+                    }
+                    CloseHandle(h_token);
+                }
+                CloseHandle(h_proc);
+            }
+        }
+    }
+
+    unsafe { LockWorkStation() != 0 }
 }
 
 pub fn find_winlogon_pid(session_id: u32) -> Option<u32> {
@@ -305,7 +402,6 @@ pub fn find_winlogon_pid(session_id: u32) -> Option<u32> {
 }
 
 pub fn spawn_injector_in_winlogon(session_id: u32, pin: &str) -> Result<(), String> {
-    // Ensure privileges are enabled
     enable_privilege("SeDebugPrivilege");
     enable_privilege("SeImpersonatePrivilege");
     enable_privilege("SeAssignPrimaryTokenPrivilege");
@@ -317,7 +413,7 @@ pub fn spawn_injector_in_winlogon(session_id: u32, pin: &str) -> Result<(), Stri
 
     let h_proc = unsafe { OpenProcess(PROCESS_QUERY_INFORMATION, 0, winlogon_pid) };
     if h_proc == 0 {
-        return Err(format!("无法打开 winlogon.exe (错误代码: {})。请确认是否以管理员或系统服务权限运行！", unsafe { GetLastError() }));
+        return Err(format!("无法打开 winlogon.exe (错误代码: {})。请确认权限！", unsafe { GetLastError() }));
     }
 
     let mut h_token = 0usize;
@@ -357,105 +453,120 @@ pub fn spawn_injector_in_winlogon(session_id: u32, pin: &str) -> Result<(), Stri
     };
 
     let cmd = format!("\"{}\" inject-pin \"{}\"", exe_path, pin);
-    let mut cmd_wide = to_wide(&cmd);
-    let mut desktop_wide = to_wide("WinSta0\\Winlogon");
-
-    let mut si: STARTUPINFOW = unsafe { std::mem::zeroed() };
-    si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
-    si.lpDesktop = desktop_wide.as_mut_ptr();
-
-    let mut pi: PROCESS_INFORMATION = unsafe { std::mem::zeroed() };
-
-    // Attempt 1: CreateProcessAsUserW
-    let res = unsafe {
-        CreateProcessAsUserW(
-            h_dup_token,
-            ptr::null(),
-            cmd_wide.as_mut_ptr(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            0,
-            0x00000010, // CREATE_NEW_CONSOLE
-            ptr::null_mut(),
-            ptr::null(),
-            &si,
-            &mut pi,
-        )
-    };
-
-    if res != 0 {
-        unsafe {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-            CloseHandle(h_dup_token);
-        }
-        return Ok(());
-    }
-
-    let err1 = unsafe { GetLastError() };
-
-    // Attempt 2: Fallback to CreateProcessWithTokenW (works for administrators with SeImpersonatePrivilege)
-    let res2 = unsafe {
-        CreateProcessWithTokenW(
-            h_dup_token,
-            0,
-            ptr::null(),
-            cmd_wide.as_mut_ptr(),
-            0x00000010, // CREATE_NEW_CONSOLE
-            ptr::null_mut(),
-            ptr::null(),
-            &si,
-            &mut pi,
-        )
-    };
-
+    let ok = spawn_process_in_session(h_dup_token, &cmd, "WinSta0\\Winlogon");
     unsafe { CloseHandle(h_dup_token); }
 
-    if res2 != 0 {
-        unsafe {
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-        }
+    if ok {
         Ok(())
     } else {
-        let err2 = unsafe { GetLastError() };
-        Err(format!("无法在 Winlogon 桌面启动解锁注入进程 (CreateProcessAsUser 错误: {}, CreateProcessWithToken 错误: {})", err1, err2))
+        Err(format!("启动 Winlogon 注入进程失败 (错误代码: {})", unsafe { GetLastError() }))
     }
 }
 
-pub fn inject_pin_on_current_desktop(pin: &str) {
+fn log_injector(msg: &str) {
     let prog_data = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".to_string());
     let log_path = std::path::PathBuf::from(prog_data).join("SmartCardUnlock").join("injector.log");
-    let _ = fs::write(&log_path, format!("[Injector] 启动成功，正在唤醒锁屏并输入 PIN 码 (长度: {})... \n", pin.len()));
+    let line = format!("[{}] {}\n", chrono_timestamp(), msg);
+    let _ = fs::OpenOptions::new().create(true).append(true).open(log_path).and_then(|mut f| {
+        use std::io::Write;
+        f.write_all(line.as_bytes())
+    });
+}
 
-    // 1. Wake screen and dismiss lock curtain
+fn chrono_timestamp() -> String {
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct SYSTEMTIME {
+        wYear: u16,
+        wMonth: u16,
+        wDayOfWeek: u16,
+        wDay: u16,
+        wHour: u16,
+        wMinute: u16,
+        wSecond: u16,
+        wMilliseconds: u16,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLocalTime(lpSystemTime: *mut SYSTEMTIME);
+    }
+    let mut st: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut st); }
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds)
+}
+
+pub fn inject_pin_on_current_desktop(pin: &str) {
+    let cur_thread = unsafe { GetCurrentThreadId() };
+    let h_desk = unsafe { GetThreadDesktop(cur_thread) };
+    let mut desk_name = [0u16; 256];
+    let mut needed = 0u32;
+    unsafe {
+        GetUserObjectInformationW(h_desk, 2 /* UOI_NAME */, desk_name.as_mut_ptr() as *mut _, 512, &mut needed);
+    }
+    let dname = String::from_utf16_lossy(&desk_name[..(needed as usize / 2).saturating_sub(1)]);
+    log_injector(&format!("Injector 启动: ThreadId={}, Desktop={}, PIN长度={}", cur_thread, dname, pin.len()));
+
+    // Attach to Winlogon if not already attached
+    let winlogon_w = to_wide("Winlogon");
+    let h_winlogon = unsafe { OpenDesktopW(winlogon_w.as_ptr(), 0, 0, MAXIMUM_ALLOWED) };
+    if h_winlogon != 0 {
+        let sres = unsafe { SetThreadDesktop(h_winlogon) };
+        log_injector(&format!("SetThreadDesktop to Winlogon: res={}", sres));
+        unsafe { CloseDesktop(h_winlogon); }
+    }
+
+    // 1. Wake display by moving mouse slightly
+    unsafe {
+        mouse_event(0x0001 /* MOUSEEVENTF_MOVE */, 2, 2, 0, 0);
+        thread::sleep(Duration::from_millis(50));
+        mouse_event(0x0001 /* MOUSEEVENTF_MOVE */, 65534, 65534, 0, 0);
+        thread::sleep(Duration::from_millis(50));
+    }
+
+    // 2. Slide up lock curtain
     unsafe {
         keybd_event(VK_SPACE, 0, 0, 0);
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(50));
         keybd_event(VK_SPACE, 0, KEYEVENTF_KEYUP, 0);
     }
-    thread::sleep(Duration::from_millis(350));
 
-    // 2. Clear any stale keystrokes in the PIN box
-    for _ in 0..10 {
-        unsafe {
-            keybd_event(VK_BACK, 0, 0, 0);
-            thread::sleep(Duration::from_millis(15));
-            keybd_event(VK_BACK, 0, KEYEVENTF_KEYUP, 0);
-            thread::sleep(Duration::from_millis(15));
-        }
+    // CRUCIAL: Allow Windows 10/11 lock screen slide animation to finish and focus PIN box!
+    thread::sleep(Duration::from_millis(700));
+
+    // 3. Clear previous characters in PIN box (Ctrl+A then Backspace)
+    unsafe {
+        keybd_event(0x11 /* VK_CONTROL */, 0, 0, 0);
+        thread::sleep(Duration::from_millis(30));
+        keybd_event(0x41 /* VK_A */, 0, 0, 0);
+        thread::sleep(Duration::from_millis(30));
+        keybd_event(0x41, 0, KEYEVENTF_KEYUP, 0);
+        thread::sleep(Duration::from_millis(30));
+        keybd_event(0x11, 0, KEYEVENTF_KEYUP, 0);
+        thread::sleep(Duration::from_millis(50));
+
+        keybd_event(VK_BACK, 0, 0, 0);
+        thread::sleep(Duration::from_millis(30));
+        keybd_event(VK_BACK, 0, KEYEVENTF_KEYUP, 0);
+        thread::sleep(Duration::from_millis(100));
     }
-    thread::sleep(Duration::from_millis(100));
 
-    // 3. Type PIN digits via SendInput KEYEVENTF_UNICODE
-    for ch in pin.chars() {
-        let utf16 = ch as u16;
+    // 4. Send each PIN digit using REAL Virtual-Key and Scan Code
+    for (idx, ch) in pin.chars().enumerate() {
+        let vk: u16 = if ch.is_ascii_digit() {
+            (ch as u8) as u16 // '0' is 0x30, '1' is 0x31 ...
+        } else if ch.is_ascii_alphabetic() {
+            (ch.to_ascii_uppercase() as u8) as u16
+        } else {
+            ch as u16
+        };
+        let scan = unsafe { MapVirtualKeyW(vk as u32, 0) } as u16;
+
         let mut down = INPUT {
             type_: 1,
             ki: KEYBDINPUT {
-                wVk: 0,
-                wScan: utf16,
-                dwFlags: KEYEVENTF_UNICODE,
+                wVk: vk,
+                wScan: scan,
+                dwFlags: 0,
                 time: 0,
                 dwExtraInfo: 0,
             },
@@ -464,31 +575,56 @@ pub fn inject_pin_on_current_desktop(pin: &str) {
         let mut up = INPUT {
             type_: 1,
             ki: KEYBDINPUT {
-                wVk: 0,
-                wScan: utf16,
-                dwFlags: KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                wVk: vk,
+                wScan: scan,
+                dwFlags: KEYEVENTF_KEYUP,
                 time: 0,
                 dwExtraInfo: 0,
             },
             padding: [0; 8],
         };
 
-        unsafe {
-            SendInput(1, &mut down, std::mem::size_of::<INPUT>() as i32);
-            thread::sleep(Duration::from_millis(25));
-            SendInput(1, &mut up, std::mem::size_of::<INPUT>() as i32);
-            thread::sleep(Duration::from_millis(35));
+        let r1 = unsafe { SendInput(1, &mut down, std::mem::size_of::<INPUT>() as i32) };
+        thread::sleep(Duration::from_millis(35));
+        let r2 = unsafe { SendInput(1, &mut up, std::mem::size_of::<INPUT>() as i32) };
+        thread::sleep(Duration::from_millis(50));
+
+        if r1 == 0 || r2 == 0 {
+            log_injector(&format!("按键 [{}] 输入失败 (错误: {})", idx, unsafe { GetLastError() }));
         }
     }
 
-    // 4. Submit via Enter
-    thread::sleep(Duration::from_millis(200));
+    // 5. Submit via Enter
+    thread::sleep(Duration::from_millis(250));
+    let enter_scan = unsafe { MapVirtualKeyW(VK_RETURN as u32, 0) } as u16;
+    let mut enter_down = INPUT {
+        type_: 1,
+        ki: KEYBDINPUT {
+            wVk: VK_RETURN as u16,
+            wScan: enter_scan,
+            dwFlags: 0,
+            time: 0,
+            dwExtraInfo: 0,
+        },
+        padding: [0; 8],
+    };
+    let mut enter_up = INPUT {
+        type_: 1,
+        ki: KEYBDINPUT {
+            wVk: VK_RETURN as u16,
+            wScan: enter_scan,
+            dwFlags: KEYEVENTF_KEYUP,
+            time: 0,
+            dwExtraInfo: 0,
+        },
+        padding: [0; 8],
+    };
     unsafe {
-        keybd_event(VK_RETURN, 0, 0, 0);
+        SendInput(1, &mut enter_down, std::mem::size_of::<INPUT>() as i32);
         thread::sleep(Duration::from_millis(40));
-        keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0);
+        SendInput(1, &mut enter_up, std::mem::size_of::<INPUT>() as i32);
     }
     thread::sleep(Duration::from_millis(200));
 
-    let _ = fs::write(&log_path, "[Injector] PIN 码注入完成！\n");
+    log_injector("PIN 码完整输入流程执行完毕！");
 }

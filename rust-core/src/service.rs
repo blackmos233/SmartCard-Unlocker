@@ -125,7 +125,25 @@ fn log_service(msg: &str) {
 }
 
 fn chrono_timestamp() -> String {
-    format!("{:?}", std::time::SystemTime::now())
+    #[repr(C)]
+    #[allow(non_snake_case)]
+    struct SYSTEMTIME {
+        wYear: u16,
+        wMonth: u16,
+        wDayOfWeek: u16,
+        wDay: u16,
+        wHour: u16,
+        wMinute: u16,
+        wSecond: u16,
+        wMilliseconds: u16,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLocalTime(lpSystemTime: *mut SYSTEMTIME);
+    }
+    let mut st: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut st); }
+    format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, st.wMilliseconds)
 }
 
 unsafe extern "system" fn service_ctrl_handler(
