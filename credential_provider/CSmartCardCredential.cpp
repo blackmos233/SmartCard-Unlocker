@@ -71,6 +71,7 @@ HRESULT CSmartCardCredential::UnAdvise() {
 HRESULT CSmartCardCredential::SetSelected(BOOL* pbAutoLogon) {
     if (pbAutoLogon) {
         *pbAutoLogon = m_bAutoLogon ? TRUE : FALSE;
+        m_bAutoLogon = false; // Reset to avoid re-triggering loop
     }
     return S_OK;
 }
@@ -309,6 +310,8 @@ HRESULT CSmartCardCredential::ReportResult(
     char logBuf[128];
     sprintf_s(logBuf, "ReportResult 认证结果返回: Status=0x%08X, SubStatus=0x%08X", (UINT)ntsStatus, (UINT)ntsSubstatus);
     LogCredProv(logBuf);
+
+    m_bAutoLogon = false;
 
     if (ntsStatus == 0) {
         LogCredProv("认证成功，系统会话已解锁！");
