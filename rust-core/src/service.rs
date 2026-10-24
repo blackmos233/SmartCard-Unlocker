@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use crate::lock::{get_active_session_id, is_session_locked, lock_session, spawn_injector_in_winlogon, to_wide};
+use crate::lock::{get_active_session_id, is_session_locked, lock_session, to_wide};
 use crate::scard::SmartCardEngine;
 use crate::vault::SecurityVault;
 
@@ -107,6 +107,21 @@ unsafe extern "system" {
         cbBufSize: u32,
         pcbBytesNeeded: *mut u32,
     ) -> i32;
+    fn RegOpenKeyExW(
+        hKey: usize,
+        lpSubKey: *const u16,
+        ulOptions: u32,
+        samDesired: u32,
+        phkResult: *mut usize,
+    ) -> i32;
+    fn RegCloseKey(hKey: usize) -> i32;
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn LoadLibraryW(lpLibFileName: *const u16) -> usize;
+    fn GetProcAddress(hModule: usize, lpProcName: *const i8) -> Option<unsafe extern "system" fn()>;
+    fn FreeLibrary(hLibModule: usize) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -174,6 +189,69 @@ unsafe extern "system" fn service_ctrl_handler(
     }
 }
 
+pub fn is_credential_provider_registered() -> bool {
+    let key_path = to_wide(r"SOFTWARE\Microsoft\Windows\CurrentVersion\Authentication\Credential Providers\{7C3B984A-94B6-4E87-8A33-8FE58D6E9A42}");
+    let mut h_key: usize = 0;
+    const HKEY_LOCAL_MACHINE: usize = 0x80000002;
+    const KEY_READ: u32 = 0x20019;
+    unsafe {
+        let res = RegOpenKeyExW(HKEY_LOCAL_MACHINE, key_path.as_ptr(), 0, KEY_READ, &mut h_key);
+        if res == 0 && h_key != 0 {
+            RegCloseKey(h_key);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+pub fn register_credential_provider_dll() -> bool {
+    let prog_data = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".to_string());
+    let sys_dir = PathBuf::from(&prog_data).join("SmartCardUnlock");
+    let _ = fs::create_dir_all(&sys_dir);
+    let dll_dest = sys_dir.join("SmartCardCredentialProvider.dll");
+
+    // Check workspace bin path
+    let src_candidates = [
+        PathBuf::from(r"D:\work\SmartCard\bin\SmartCardCredentialProvider.dll"),
+        std::env::current_exe()
+            .unwrap_or_default()
+            .parent()
+            .unwrap_or(&PathBuf::new())
+            .join("SmartCardCredentialProvider.dll"),
+    ];
+
+    for src in &src_candidates {
+        if src.exists() {
+            let _ = fs::copy(src, &dll_dest);
+            break;
+        }
+    }
+
+    if !dll_dest.exists() {
+        log_service(&format!("[错误] 找不到凭据提供程序 DLL: {:?}", dll_dest));
+        return false;
+    }
+
+    let dll_wide = to_wide(dll_dest.to_str().unwrap_or_default());
+    unsafe {
+        let h_module = LoadLibraryW(dll_wide.as_ptr());
+        if h_module != 0 {
+            let proc_name = std::ffi::CString::new("DllRegisterServer").unwrap();
+            let p_fn = GetProcAddress(h_module, proc_name.as_ptr());
+            if let Some(reg_fn) = p_fn {
+                let reg: extern "system" fn() -> i32 = std::mem::transmute(reg_fn);
+                let hr = reg();
+                log_service(&format!("SmartCardCredentialProvider 成功注册到系统！HRESULT = 0x{:08X}", hr));
+                FreeLibrary(h_module);
+                return hr == 0;
+            }
+            FreeLibrary(h_module);
+        }
+    }
+    false
+}
+
 unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
     let name_wide = to_wide("SmartCardUnlock");
     let handle = unsafe {
@@ -198,6 +276,9 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
 
     log_service("=== SmartCardUnlock 服务已启动 (SYSTEM 权限) ===");
 
+    // 确保原生凭据提供程序向 Windows 注册
+    register_credential_provider_dll();
+
     let engine = match SmartCardEngine::new() {
         Ok(e) => e,
         Err(err) => {
@@ -216,7 +297,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
         }
     };
 
-    let vault = SecurityVault::new();
+    let _vault = SecurityVault::new();
     let mut last_present: Option<bool> = None;
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
@@ -249,15 +330,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
                     if present {
                         log_service(&format!("[事件] 检测到 IC4442 卡片插入！(目标会话: {})", session_id));
                         if is_session_locked(session_id) {
-                            log_service("系统处于锁定状态，正在读取凭据并注入 PIN 码解锁...");
-                            if let Some(pin) = vault.load_pin() {
-                                match spawn_injector_in_winlogon(session_id, &pin) {
-                                    Ok(_) => log_service("[成功] 已成功向 Winlogon 桌面派发解锁指令！"),
-                                    Err(e) => log_service(&format!("[失败] 注入解锁指令失败: {}", e)),
-                                }
-                            } else {
-                                log_service("[警告] 未在本地保管库中找到已配置的 PIN 码！");
-                            }
+                            log_service("系统处于锁定状态，由系统原生 SmartCardCredentialProvider 处理 Windows 原生认证解锁。");
                         } else {
                             log_service("系统处于未锁定状态，无需执行解锁。");
                         }

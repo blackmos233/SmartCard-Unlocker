@@ -40,18 +40,14 @@ fn run_daemon(engine: &SmartCardEngine, vault: &SecurityVault) {
         }
     }
 
-    let pin = match vault.load_pin() {
-        Some(p) => p,
-        None => {
-            println!("[错误] 无法解密 PIN 码，请重新配置！");
-            return;
-        }
-    };
+    if let None = vault.load_pin() {
+        println!("[错误] 无法解密 PIN 码，请重新配置！");
+        return;
+    }
 
     println!("\n[OK] 智能卡安全守护已启动！(按 Ctrl+C 可停止)");
     println!("     -> 拔出 IC4442 卡片: 毫秒级触发 Windows 原生锁屏");
-    println!("     -> 插入 IC4442 卡片: 自动唤醒并向 Winlogon 注入 PIN 码解锁");
-    println!("     [注意] 锁屏界面受 Windows 安全隔离。若要开机自启且无感解锁，推荐安装系统服务！\n");
+    println!("     -> 插入 IC4442 卡片: 系统原生凭据提供程序 (Credential Provider) 极速认证解锁\n");
 
     let mut last_present: Option<bool> = None;
 
@@ -90,14 +86,7 @@ fn run_daemon(engine: &SmartCardEngine, vault: &SecurityVault) {
                     if present {
                         println!("\n💳 [事件] 检测到 IC4442 卡片插入！(会话 ID: {})", session_id);
                         if lock::is_session_locked(session_id) {
-                            println!("   -> 当前系统处于锁定状态，正在向 Winlogon 桌面派发解锁指令...");
-                            match lock::spawn_injector_in_winlogon(session_id, &pin) {
-                                Ok(_) => println!("   -> [成功] 已成功向 Winlogon 桌面派发解锁指令！"),
-                                Err(e) => {
-                                    println!("   -> [警告] 跨桌面注入失败: {}", e);
-                                    println!("      提示: 推荐执行菜单 [2] 一键安装为 Windows 系统服务，完全以 SYSTEM 权限运行！");
-                                }
-                            }
+                            println!("   -> 当前系统处于锁定状态，由 Windows 原生凭据提供程序 (Credential Provider) 处理认证解锁。");
                         } else {
                             println!("   -> 当前系统未锁定，保持正常使用。");
                         }
@@ -147,6 +136,15 @@ fn check_status(engine: &SmartCardEngine, vault: &SecurityVault) {
             "已安装并正在运行 (SYSTEM 权限)"
         } else {
             "已安装但已停止"
+        }
+    );
+
+    let credprov_registered = service::is_credential_provider_registered();
+    println!("6. Windows 原生凭据提供程序状态: {}",
+        if credprov_registered {
+            "已注册到系统 (CLSID: {7C3B984A-94B6-4E87-8A33-8FE58D6E9A42})"
+        } else {
+            "未注册 (可通过菜单 [7] 进行注册)"
         }
     );
     println!("--------------------------\n");
@@ -269,6 +267,14 @@ fn main() {
                 clear_pin(&vault);
                 return;
             }
+            "register-credprov" => {
+                if service::register_credential_provider_dll() {
+                    println!("[OK] Windows 原生凭据提供程序 (Credential Provider) 注册成功！");
+                } else {
+                    println!("[错误] 凭据提供程序注册失败，请确保以管理员权限或系统服务运行！");
+                }
+                return;
+            }
             _ => {}
         }
     }
@@ -291,8 +297,9 @@ fn main() {
         println!("  [4] 检查硬件、卡片与服务运行状态");
         println!("  [5] 停止并卸载系统后台服务");
         println!("  [6] 清除已绑定的 PIN 码");
-        println!("  [7] 退出程序");
-        print!("\n请选择操作 [1-7]: ");
+        println!("  [7] 注册/修复 Windows 原生凭据提供程序 (Credential Provider)");
+        println!("  [8] 退出程序");
+        print!("\n请选择操作 [1-8]: ");
         io::stdout().flush().unwrap();
 
         let mut choice = String::new();
@@ -317,7 +324,14 @@ fn main() {
                 }
             }
             "6" => clear_pin(&vault),
-            "7" | "q" | "exit" => {
+            "7" => {
+                if service::register_credential_provider_dll() {
+                    println!("\n[OK] Windows 原生凭据提供程序注册成功！\n");
+                } else {
+                    println!("\n[错误] 凭据提供程序注册失败，请尝试以管理员身份运行！\n");
+                }
+            }
+            "8" | "q" | "exit" => {
                 println!("程序退出。");
                 break;
             }

@@ -401,6 +401,7 @@ pub fn find_winlogon_pid(session_id: u32) -> Option<u32> {
     None
 }
 
+#[allow(dead_code)]
 pub fn spawn_injector_in_winlogon(session_id: u32, pin: &str) -> Result<(), String> {
     enable_privilege("SeDebugPrivilege");
     enable_privilege("SeImpersonatePrivilege");
