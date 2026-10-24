@@ -17,23 +17,23 @@ fn print_banner() {
     println!("==============================================================");
 }
 
-fn run_daemon(engine: &SmartCardEngine, vault: &SecurityVault) {
+fn run_daemon(engine: &mut SmartCardEngine, vault: &SecurityVault) {
     lock::enable_privilege("SeDebugPrivilege");
     lock::enable_privilege("SeImpersonatePrivilege");
 
     if !vault.is_enrolled() {
-        println!("\n[提示] 当前尚未配置 Windows Hello PIN 码！");
-        print!("请输入您电脑的 Windows Hello PIN 码进行加密绑定: ");
+        println!("\n[提示] 当前尚未配置解锁密码/PIN 码！");
+        print!("请输入您电脑的 Windows 解锁密码或 Hello PIN 码进行加密绑定: ");
         io::stdout().flush().unwrap();
         let mut pin = String::new();
         io::stdin().read_line(&mut pin).unwrap();
         let pin = pin.trim();
         if pin.is_empty() {
-            println!("[错误] PIN 码不能为空！");
+            println!("[错误] 密码不能为空！");
             return;
         }
         if vault.save_pin(pin) {
-            println!("[OK] Windows Hello PIN 码已通过 Windows DPAPI 安全加密存储！");
+            println!("[OK] 解锁密码已通过 Windows DPAPI 安全加密存储！");
         } else {
             println!("[错误] 凭据加密失败！");
             return;
@@ -41,7 +41,7 @@ fn run_daemon(engine: &SmartCardEngine, vault: &SecurityVault) {
     }
 
     if let None = vault.load_pin() {
-        println!("[错误] 无法解密 PIN 码，请重新配置！");
+        println!("[错误] 无法解密密码，请重新配置！");
         return;
     }
 
@@ -50,12 +50,22 @@ fn run_daemon(engine: &SmartCardEngine, vault: &SecurityVault) {
     println!("     -> 插入 IC4442 卡片: 系统原生凭据提供程序 (Credential Provider) 极速认证解锁\n");
 
     let mut last_present: Option<bool> = None;
+    let mut last_reader = String::new();
 
     loop {
         let readers = engine.list_readers();
         if readers.is_empty() {
-            println!("[警告] 未检测到 RTS5169 读卡器，请检查 USB 连接...");
-            thread::sleep(Duration::from_millis(1000));
+            if !last_reader.is_empty() {
+                println!("\n⚠️  [硬件断开] 检测到 RTS5169 读卡器 USB 已断开连接！进入等待重连状态...");
+                last_reader.clear();
+                if let Some(true) = last_present {
+                    last_present = Some(false);
+                    let session_id = lock::get_active_session_id();
+                    println!("🔒 [安全防护] 读卡器拔出，立即执行系统原生锁屏 (会话 ID: {})...", session_id);
+                    lock::lock_session(session_id);
+                }
+            }
+            thread::sleep(Duration::from_millis(500));
             continue;
         }
 
@@ -66,6 +76,11 @@ fn run_daemon(engine: &SmartCardEngine, vault: &SecurityVault) {
                 lower.contains("emv") || lower.contains("rts") || lower.contains("realtek")
             })
             .unwrap_or(&readers[0]);
+
+        if target_reader != &last_reader {
+            last_reader = target_reader.clone();
+            println!("\n🔌 [硬件重连] 成功识别智能卡读卡器: {}", last_reader);
+        }
 
         let (present, _event_state) = engine.get_card_status(target_reader);
 
@@ -108,7 +123,7 @@ fn run_daemon(engine: &SmartCardEngine, vault: &SecurityVault) {
     }
 }
 
-fn check_status(engine: &SmartCardEngine, vault: &SecurityVault) {
+fn check_status(engine: &mut SmartCardEngine, vault: &SecurityVault) {
     println!("\n--- 硬件与安全状态诊断 ---");
     let readers = engine.list_readers();
     println!("1. 发现的智能卡读卡器 ({} 个):", readers.len());
@@ -122,7 +137,7 @@ fn check_status(engine: &SmartCardEngine, vault: &SecurityVault) {
         println!("   状态标志字: 0x{:08X}", state);
     }
 
-    println!("3. Windows Hello PIN 绑定状态: {}", if vault.is_enrolled() { "已加密绑定" } else { "未绑定" });
+    println!("3. Windows 解锁密码绑定状态: {}", if vault.is_enrolled() { "已加密绑定" } else { "未绑定" });
 
     let session_id = lock::get_active_session_id();
     let locked = lock::is_session_locked(session_id);
@@ -151,27 +166,27 @@ fn check_status(engine: &SmartCardEngine, vault: &SecurityVault) {
 }
 
 fn set_pin(vault: &SecurityVault) {
-    print!("\n请输入要绑定的 Windows Hello PIN 码: ");
+    print!("\n请输入要绑定的 Windows 解锁密码或 PIN 码: ");
     io::stdout().flush().unwrap();
     let mut pin = String::new();
     io::stdin().read_line(&mut pin).unwrap();
     let pin = pin.trim();
 
     if pin.is_empty() {
-        println!("[错误] PIN 码不能为空！");
+        println!("[错误] 密码不能为空！");
         return;
     }
 
     if vault.save_pin(pin) {
-        println!("[OK] Windows Hello PIN 码保存成功（已使用 DPAPI 机器级双重加密）！\n");
+        println!("[OK] Windows 解锁密码保存成功（已使用 DPAPI 机器级双重加密）！\n");
     } else {
-        println!("[错误] 保存 PIN 码失败！\n");
+        println!("[错误] 保存密码失败！\n");
     }
 }
 
 fn clear_pin(vault: &SecurityVault) {
     if vault.clear() {
-        println!("\n[OK] 已清除绑定的 PIN 码！\n");
+        println!("\n[OK] 已清除绑定的密码！\n");
     } else {
         println!("\n[错误] 清除失败！\n");
     }
@@ -226,7 +241,7 @@ fn main() {
                 return;
             }
             "run" | "daemon" => {
-                let engine = match SmartCardEngine::new() {
+                let mut engine = match SmartCardEngine::new() {
                     Ok(e) => e,
                     Err(err) => {
                         eprintln!("[严重错误] 无法初始化 Windows PC/SC 智能卡服务 (代码: 0x{:08X})", err);
@@ -234,11 +249,11 @@ fn main() {
                     }
                 };
                 let vault = SecurityVault::new();
-                run_daemon(&engine, &vault);
+                run_daemon(&mut engine, &vault);
                 return;
             }
             "status" => {
-                let engine = match SmartCardEngine::new() {
+                let mut engine = match SmartCardEngine::new() {
                     Ok(e) => e,
                     Err(err) => {
                         eprintln!("[严重错误] 无法初始化 Windows PC/SC 智能卡服务 (代码: 0x{:08X})", err);
@@ -246,16 +261,16 @@ fn main() {
                     }
                 };
                 let vault = SecurityVault::new();
-                check_status(&engine, &vault);
+                check_status(&mut engine, &vault);
                 return;
             }
             "set-pin" => {
                 let vault = SecurityVault::new();
                 if args.len() > 2 {
                     if vault.save_pin(args[2].trim()) {
-                        println!("[OK] PIN 码设置成功！");
+                        println!("[OK] 解锁密码设置成功！");
                     } else {
-                        println!("[错误] PIN 码保存失败！");
+                        println!("[错误] 密码保存失败！");
                     }
                 } else {
                     set_pin(&vault);
@@ -279,7 +294,7 @@ fn main() {
         }
     }
 
-    let engine = match SmartCardEngine::new() {
+    let mut engine = match SmartCardEngine::new() {
         Ok(e) => e,
         Err(err) => {
             eprintln!("[严重错误] 无法初始化 Windows PC/SC 智能卡服务 (代码: 0x{:08X})", err);
@@ -293,10 +308,10 @@ fn main() {
         print_banner();
         println!("  [1] 启动插拔卡自动锁屏/解锁守护 (前台控制台模式)");
         println!("  [2] 一键安装并启动系统后台服务 (开机自启/SYSTEM权限，推荐)");
-        println!("  [3] 配置/修改 Windows Hello PIN 码");
+        println!("  [3] 配置/修改 Windows 解锁密码");
         println!("  [4] 检查硬件、卡片与服务运行状态");
         println!("  [5] 停止并卸载系统后台服务");
-        println!("  [6] 清除已绑定的 PIN 码");
+        println!("  [6] 清除已绑定的密码");
         println!("  [7] 注册/修复 Windows 原生凭据提供程序 (Credential Provider)");
         println!("  [8] 退出程序");
         print!("\n请选择操作 [1-8]: ");
@@ -308,7 +323,7 @@ fn main() {
         }
 
         match choice.trim() {
-            "1" => run_daemon(&engine, &vault),
+            "1" => run_daemon(&mut engine, &vault),
             "2" => {
                 match service::install_service() {
                     Ok(_) => println!("\n[OK] 服务已成功安装并启动！开机即可在锁屏界面自动解锁！\n"),
@@ -316,7 +331,7 @@ fn main() {
                 }
             }
             "3" => set_pin(&vault),
-            "4" => check_status(&engine, &vault),
+            "4" => check_status(&mut engine, &vault),
             "5" => {
                 match service::uninstall_service() {
                     Ok(_) => println!("\n[OK] 服务已成功卸载！\n"),

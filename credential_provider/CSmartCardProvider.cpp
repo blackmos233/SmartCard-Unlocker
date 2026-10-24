@@ -183,29 +183,34 @@ HRESULT CSmartCardProvider::GetCredentialAt(DWORD dwIndex, ICredentialProviderCr
 
 void CSmartCardProvider::MonitorCardLoop() {
     SCARDCONTEXT hContext = 0;
-    LONG lRes = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &hContext);
-    if (lRes != SCARD_S_SUCCESS) {
-        lRes = SCardEstablishContext(SCARD_SCOPE_USER, NULL, NULL, &hContext);
-    }
-    if (lRes != SCARD_S_SUCCESS) {
-        LogCredProv("智能卡监控: SCardEstablishContext 失败");
-        return;
-    }
-
     LogCredProv("智能卡监控线程运行中 (PC/SC WinSCard)");
 
     WCHAR targetReader[256] = {0};
-    DWORD cchReaders = SCARD_AUTOALLOCATE;
-    LPWSTR pmszReaders = NULL;
-
     bool lastPresent = false;
     bool initialCheck = true;
 
     while (WaitForSingleObject(m_hStopEvent, 200) == WAIT_TIMEOUT) {
-        // Enumerate readers if not found
+        // 1. Ensure valid SCARDCONTEXT
+        if (hContext == 0 || SCardIsValidContext(hContext) != SCARD_S_SUCCESS) {
+            if (hContext) {
+                SCardReleaseContext(hContext);
+                hContext = 0;
+            }
+            LONG lEst = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &hContext);
+            if (lEst != SCARD_S_SUCCESS) {
+                lEst = SCardEstablishContext(SCARD_SCOPE_USER, NULL, NULL, &hContext);
+            }
+            if (lEst != SCARD_S_SUCCESS || hContext == 0) {
+                continue;
+            }
+        }
+
+        // 2. Discover reader if not currently selected
         if (targetReader[0] == 0) {
-            lRes = SCardListReadersW(hContext, NULL, (LPWSTR)&pmszReaders, &cchReaders);
-            if (lRes == SCARD_S_SUCCESS && pmszReaders) {
+            DWORD cchReaders = SCARD_AUTOALLOCATE;
+            LPWSTR pmszReaders = NULL;
+            LONG lList = SCardListReadersW(hContext, NULL, (LPWSTR)&pmszReaders, &cchReaders);
+            if (lList == SCARD_S_SUCCESS && pmszReaders) {
                 LPCWSTR p = pmszReaders;
                 while (*p) {
                     std::wstring rname(p);
@@ -218,27 +223,32 @@ void CSmartCardProvider::MonitorCardLoop() {
                     p += wcslen(p) + 1;
                 }
                 SCardFreeMemory(hContext, pmszReaders);
-                pmszReaders = NULL;
-                cchReaders = SCARD_AUTOALLOCATE;
 
                 if (targetReader[0] != 0) {
                     char buf[300];
-                    sprintf_s(buf, "找到智能卡读卡器: %ls", targetReader);
+                    sprintf_s(buf, "[硬件连接] 成功发现智能卡读卡器: %ls", targetReader);
                     LogCredProv(buf);
+                    initialCheck = true; // reset initial check for freshly connected reader
                 }
-            }
-            if (targetReader[0] == 0) {
+            } else {
+                // If reader not available yet, release context so next loop gets fresh PnP enumeration
+                SCardReleaseContext(hContext);
+                hContext = 0;
                 continue;
             }
         }
 
-        // Query reader status
+        if (targetReader[0] == 0) {
+            continue;
+        }
+
+        // 3. Query reader status
         SCARD_READERSTATEW state;
         ZeroMemory(&state, sizeof(state));
         state.szReader = targetReader;
         state.dwCurrentState = SCARD_STATE_UNAWARE;
 
-        lRes = SCardGetStatusChangeW(hContext, 100, &state, 1);
+        LONG lRes = SCardGetStatusChangeW(hContext, 100, &state, 1);
         if (lRes == SCARD_S_SUCCESS) {
             bool isPresent = (state.dwEventState & SCARD_STATE_PRESENT) != 0;
 
@@ -269,11 +279,27 @@ void CSmartCardProvider::MonitorCardLoop() {
                     }
                 }
             }
-        } else if (lRes == SCARD_E_UNKNOWN_READER || lRes == (LONG)SCARD_E_NO_READERS_AVAILABLE) {
-            targetReader[0] = 0; // reset reader
+        } else {
+            // Reader error or detached (SCARD_E_UNKNOWN_READER, SCARD_E_READER_UNAVAILABLE, etc.)
+            LogCredProv("[硬件断开] 读卡器已拔出或断开，进入等待重连状态...");
+            targetReader[0] = 0;
+            if (lastPresent) {
+                lastPresent = false;
+                if (m_pCredential) {
+                    m_pCredential->SetCardInserted(false);
+                }
+            }
+            // Release context to force fresh PnP discovery upon re-plug
+            if (hContext) {
+                SCardReleaseContext(hContext);
+                hContext = 0;
+            }
         }
     }
 
-    SCardReleaseContext(hContext);
+    if (hContext) {
+        SCardReleaseContext(hContext);
+        hContext = 0;
+    }
     LogCredProv("智能卡监控线程安全退出。");
 }

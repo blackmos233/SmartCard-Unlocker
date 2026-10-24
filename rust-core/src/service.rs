@@ -279,7 +279,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
     // 确保原生凭据提供程序向 Windows 注册
     register_credential_provider_dll();
 
-    let engine = match SmartCardEngine::new() {
+    let mut engine = match SmartCardEngine::new() {
         Ok(e) => e,
         Err(err) => {
             log_service(&format!("[错误] 无法初始化 PC/SC 智能卡管理器 (错误码: 0x{:08X})", err));
@@ -299,11 +299,22 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
 
     let _vault = SecurityVault::new();
     let mut last_present: Option<bool> = None;
+    let mut last_reader = String::new();
 
     while !STOP_REQUESTED.load(Ordering::SeqCst) {
         let readers = engine.list_readers();
         if readers.is_empty() {
-            thread::sleep(Duration::from_millis(1000));
+            if !last_reader.is_empty() {
+                log_service("[硬件断开] 智能卡读卡器 USB 已断开连接，进入等待重连状态...");
+                last_reader.clear();
+                if let Some(true) = last_present {
+                    last_present = Some(false);
+                    let session_id = get_active_session_id();
+                    log_service(&format!("读卡器拔出，触发安全锁屏 (会话 ID: {})...", session_id));
+                    lock_session(session_id);
+                }
+            }
+            thread::sleep(Duration::from_millis(500));
             continue;
         }
 
@@ -314,6 +325,11 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
                 lower.contains("emv") || lower.contains("rts") || lower.contains("realtek")
             })
             .unwrap_or(&readers[0]);
+
+        if target_reader != &last_reader {
+            last_reader = target_reader.clone();
+            log_service(&format!("[硬件重连] 成功发现/重连智能卡读卡器: {}", last_reader));
+        }
 
         let (present, _event_state) = engine.get_card_status(target_reader);
 
