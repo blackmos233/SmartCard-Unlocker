@@ -46,7 +46,6 @@ def test_unlock_controller():
     controller._handle_card_inserted("Generic EMV Smartcard Reader 0", b"", {})
     assert len(unlocked_users) == 1, f"Expected 1 unlock event, got {len(unlocked_users)}"
     assert unlocked_users[0] == "AdminBlack", f"Unexpected unlocked user: {unlocked_users[0]}"
-    assert screen_guard_states[-1] is False, "Screen guard should have been dismissed!"
     print(f"[TEST] Card inserted simulation succeeded: unlocked {unlocked_users[0]}")
 
     print("[TEST] Simulating card removal...")

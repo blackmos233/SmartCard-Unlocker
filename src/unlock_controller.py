@@ -25,6 +25,25 @@ DESKTOP_SWITCHDESKTOP = 0x0100
 VK_SPACE = 0x20
 VK_RETURN = 0x0D
 KEYEVENTF_KEYUP = 0x0002
+KEYEVENTF_UNICODE = 0x0004
+
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", wintypes.WORD),
+        ("wScan", wintypes.WORD),
+        ("dwFlags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_size_t),
+    ]
+
+
+class INPUT(ctypes.Structure):
+    class _INPUT_UNION(ctypes.Union):
+        _fields_ = [("ki", KEYBDINPUT)]
+
+    _anonymous_ = ("_u",)
+    _fields_ = [("type", wintypes.DWORD), ("_u", _INPUT_UNION)]
 
 
 def is_workstation_locked() -> bool:
@@ -34,7 +53,6 @@ def is_workstation_locked() -> bool:
     """
     h_desk = user32.OpenInputDesktop(0, False, DESKTOP_SWITCHDESKTOP)
     if not h_desk:
-        # If open input desktop fails, the secure desktop / lock screen is active
         return True
     user32.CloseDesktop(h_desk)
     return False
@@ -56,13 +74,40 @@ def dismiss_lockscreen_curtain() -> None:
     Send synthetic keypresses to wake monitor and dismiss Windows 10/11 lock screen slide curtain.
     """
     try:
-        # Space press & release
         user32.keybd_event(VK_SPACE, 0, 0, 0)
         time.sleep(0.05)
         user32.keybd_event(VK_SPACE, 0, KEYEVENTF_KEYUP, 0)
         time.sleep(0.1)
+        user32.keybd_event(VK_RETURN, 0, 0, 0)
+        time.sleep(0.05)
+        user32.keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
     except Exception as e:
         logger.debug(f"Error dismissing lock curtain: {e}")
+
+
+def inject_pin_keystrokes(pin: str) -> None:
+    """
+    Send Windows Hello PIN digits directly to the lock screen PIN input box.
+    """
+    dismiss_lockscreen_curtain()
+    time.sleep(0.35)
+
+    for ch in pin:
+        utf16_val = ord(ch)
+        down = INPUT(type=1)
+        down.ki = KEYBDINPUT(wVk=0, wScan=utf16_val, dwFlags=KEYEVENTF_UNICODE, time=0, dwExtraInfo=0)
+        up = INPUT(type=1)
+        up.ki = KEYBDINPUT(wVk=0, wScan=utf16_val, dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP, time=0, dwExtraInfo=0)
+
+        user32.SendInput(1, ctypes.byref(down), ctypes.sizeof(INPUT))
+        time.sleep(0.02)
+        user32.SendInput(1, ctypes.byref(up), ctypes.sizeof(INPUT))
+        time.sleep(0.04)
+
+    time.sleep(0.15)
+    user32.keybd_event(VK_RETURN, 0, 0, 0)
+    time.sleep(0.05)
+    user32.keybd_event(VK_RETURN, 0, KEYEVENTF_KEYUP, 0)
 
 
 class UnlockController:
@@ -90,7 +135,6 @@ class UnlockController:
         # State & callbacks
         self.on_unlock_succeeded: Optional[Callable[[str], None]] = None
         self.on_unlock_failed: Optional[Callable[[str], None]] = None
-        self.on_screen_guard_request: Optional[Callable[[bool], None]] = None
 
         # Wire smartcard callbacks
         self.engine.on_card_inserted = self._handle_card_inserted
@@ -154,15 +198,14 @@ class UnlockController:
         # Authentication succeeded
         self.failed_attempts = 0
         username, password, domain = creds
-        logger.info(f"Card authentication SUCCESS for user '{username}'. Initiating unlock...")
+        logger.info(f"Card authentication SUCCESS for user '{username}'.")
 
-        # Request UI screen guard to dismiss
-        if self.on_screen_guard_request:
-            self.on_screen_guard_request(False)
-
-        # If Windows native lock screen is active, dismiss curtain
+        # Inject PIN into Windows lock screen if locked
         if is_workstation_locked():
-            dismiss_lockscreen_curtain()
+            logger.info("Workstation is locked. Injecting Windows Hello PIN to unlock...")
+            # Use enrolled pin or password
+            pin_to_inject = password if password else card_pin
+            inject_pin_keystrokes(pin_to_inject)
 
         if self.on_unlock_succeeded:
             self.on_unlock_succeeded(username)
@@ -175,25 +218,17 @@ class UnlockController:
             logger.info("Auto-lock on removal is disabled in settings.")
             return
 
-        # Trigger Screen Guard overlay if available
-        if self.on_screen_guard_request:
-            self.on_screen_guard_request(True)
-
-        # Also trigger native LockWorkStation
+        # Trigger native Windows LockWorkStation immediately
         lock_workstation()
 
     def manual_lock(self) -> None:
         """Trigger workstation lock manually."""
-        if self.on_screen_guard_request:
-            self.on_screen_guard_request(True)
         lock_workstation()
 
     def manual_unlock_with_pin(self, pin: str, card_token: str = "IC4442_DEFAULT_TOKEN") -> bool:
         """Emergency unlock with user PIN in case card is unavailable."""
         creds = self.vault.unlock_verify(pin=pin, card_token=card_token)
         if creds:
-            if self.on_screen_guard_request:
-                self.on_screen_guard_request(False)
             if self.on_unlock_succeeded:
                 self.on_unlock_succeeded(creds[0])
             return True

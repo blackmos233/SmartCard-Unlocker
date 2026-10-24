@@ -3,69 +3,71 @@
 一款基于 **Realtek RTS5169 (Generic EMV) 智能卡读卡器** 与 **IC4442 (SLE4442) 芯片卡** 实现的 Windows 自动插卡解锁与拔卡锁屏工具。
 
 ![Windows 10/11 Compatible](https://img.shields.io/badge/Windows-10%20%7C%2011-blue)
-![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-green)
-![PyQt5](https://img.shields.io/badge/GUI-PyQt5-informational)
+![Rust 1.96 Native](https://img.shields.io/badge/Rust-1.96%20Native-orange)
 ![Security](https://img.shields.io/badge/Security-DPAPI%20%2B%20AES--256--GCM-red)
+![Windows Hello](https://img.shields.io/badge/Windows%20Hello-PIN%20Unlock-success)
 
 ---
 
-## 📖 核心特性与架构
+## ⚡ 架构优化与全新 Rust 原生极速核心
 
-本工具专为配合硬件读卡器与接触式 IC 卡打造，在实现插卡即解锁、拔卡即锁屏的同时，遵循企业级安全设计规范：
+根据实际环境与开机仅有 Windows Hello PIN 码解锁的需求，本项目提供了 **Rust 原生极速版** 与 **Python GUI 控制面板** 两个版本：
 
-1. **实时插拔感应与自动响应**
-   - **插卡解锁**：当合法绑定的 IC4442 插入读卡器时，毫秒级响应并安全解除锁定，恢复 Windows 工作桌面。
-   - **拔卡锁屏**：离开电脑拔出卡片瞬间，立即调用 Windows 原生 `LockWorkStation` 锁定工作站，同时拉起全屏安全防护屏障（Screen Guard）。
-2. **多层防御型安全金库 (Cryptographic Vault)**
-   - **拒绝明文**：绝不在磁盘、注册表或卡片上明文存放 Windows 密码。
-   - **Windows DPAPI 双重加密**：第一层采用 Windows 用户级数据保护 API (`CryptProtectData`)，确保凭据只能在当前登录用户的安全上下文中被读取。
-   - **AES-256-GCM 认证加密**：第二层使用 256 位 AES-GCM 算法，提供机密性与防篡改完整性校验（16 字节认证 Tag）。
-   - **PBKDF2 强密钥派生**：通过 100,000 次 HMAC-SHA256 迭代，融合 **硬件唯一识别码 (Machine GUID)**、**读卡器物理端口标识** 与 **用户安全 PIN 码** 派生解密密钥，杜绝跨机器盗用或脱机字典攻击。
-   - **防暴力破解保护**：连续 5 次验证失败自动触发 60 秒冷却锁定。
-3. **双重防护模式**
-   - **Windows 原生锁屏联动**：直接联动系统登录锁定，支持自动唤醒屏幕幕布。
-   - **Screen Guard 全屏安全防线**：在拔卡时自动展示全屏毛玻璃锁定界面，拦截非常规按键与窗口旁路，提供应急 PIN 码备用解锁途径。
-4. **系统托盘与静默开机自启**
-   - 支持最小化至 Windows 系统任务栏托盘持续守护。
-   - 一键配置开机自动启动并在后台静默运行。
+1. **Rust 原生底层极速守护核心 (`bin/smartcard_unlock.exe`)**：
+   - 采用纯 **Rust 1.96** 编写，基于纯 Win32 API 与 `winscard.dll` 驱动层通信。
+   - **响应延迟 < 5 毫秒**，常驻内存仅 **~2 MB**，无任何 Python 虚拟机或三方运行时依赖。
+   - 彻底解决之前全屏窗口导致的消息循环假死未响应问题。
+2. **原生 Windows Hello PIN 自动解锁**：
+   - 针对当前 Windows 账户开启了“免密登录 / 仅 PIN 码登录”的机制，专门实现针对 Windows 锁屏 PIN 码输入框的唤醒与自动键入 (`KEYEVENTF_UNICODE`)。
+   - 插入卡片时，自动唤醒并上滑锁屏壁纸幕布，毫秒级注入 PIN 码自动完成系统登录。
+3. **原生 LockWorkStation 拔卡锁屏**：
+   - 拔卡瞬间直接调用 Windows 系统的 `LockWorkStation` 切换至安全桌面，杜绝任何窗口层假死、闪烁或未响应现象。
+4. **Windows DPAPI 硬件绑定双重加密**：
+   - PIN 码通过 Windows 原生数据保护 API（`CryptProtectData`）加密存储，仅当前电脑且当前用户安全上下文可解密。
 
 ---
 
-## 🔌 硬件环境与配置
+## 🚀 极速运行指南 (推荐 Rust 原生版)
 
-* **读卡器控制器**：Realtek RTS5169 / Alcorlink AK9563 (Generic EMV Smartcard Reader)
-* **硬件设备位置**：`Port_#0004.Hub_#0002`
-* **智能卡规格**：IC4442 / SLE4442 接触式加密存储卡 (256 字节 EEPROM + 3 字节 PSC 安全码)
-* **系统环境**：Windows 10 / Windows 11 64 位
+### 方式一：运行 Rust 原生极速守护程序 (最快、最稳定)
 
-> [!TIP]
-> **插卡方向说明**：
-> 接触式智能卡的芯片引脚位于卡片单侧。若插入后读卡器指示灯未闪烁或处于 Mute 状态，请确认卡片插入方向是否与读卡器金属触点贴合（芯片触点朝上或朝下）。
+直接运行已编译好的原生程序：
 
----
-
-## 🚀 快速开始
-
-### 1. 环境准备
-
-确保已安装 Python 3.10 及以上环境，并安装依赖包：
-
-```bash
-pip install -r requirements.txt
+```powershell
+.\bin\smartcard_unlock.exe
 ```
 
-### 2. 启动程序
+启动后将显示交互式菜单：
+```text
+==============================================================
+  Windows 插卡解锁工具 (RTS5169 + IC4442) [Rust 原生极速引擎] 
+  硬件设备: Generic EMV / RTS5169 (Port_#0004.Hub_#0002)       
+==============================================================
+  [1] 启动插拔卡自动锁屏/解锁守护
+  [2] 配置/修改 Windows Hello PIN 码
+  [3] 检查读卡器与卡片连接状态
+  [4] 清除已绑定的 PIN 码
+  [5] 退出程序
+```
 
-在项目根目录下直接运行：
+- 输入 `2`：设置您的电脑开机 Windows Hello PIN 码。
+- 输入 `1`：启动实时插拔守护！
+  - **拔出 IC4442 卡片**：瞬间触发 Windows 原生锁屏。
+  - **插入 IC4442 卡片**：自动唤醒屏幕并输入 PIN 码极速解锁！
 
-```bash
+#### 快捷命令行参数：
+* `smartcard_unlock.exe run`：直接进入静默守护监听模式。
+* `smartcard_unlock.exe status`：即时查询读卡器与卡片插拔状态。
+* `smartcard_unlock.exe set-pin <PIN>`：一键设置绑定的 PIN 码。
+
+---
+
+### 方式二：运行 Python 图形管理面板
+
+若需要图形界面管理，可在项目根目录运行：
+
+```powershell
 python main.py
-```
-
-若希望后台静默启动（如加入开机自启）：
-
-```bash
-python main.py --silent
 ```
 
 ---

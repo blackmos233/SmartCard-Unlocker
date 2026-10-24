@@ -21,7 +21,6 @@ from PyQt5.QtGui import QFont, QIcon, QColor, QPalette
 from .smartcard_engine import SmartCardEngine
 from .security_vault import SecurityVault
 from .unlock_controller import UnlockController, is_workstation_locked
-from .screen_guard import ScreenGuardWindow
 from .tray_icon import SmartCardTrayIcon
 
 
@@ -70,9 +69,6 @@ class MainWindow(QMainWindow):
         self.setFixedSize(760, 560)
 
         # Components
-        self.screen_guard = ScreenGuardWindow()
-        self.screen_guard.pin_unlock_requested.connect(self._handle_pin_unlock)
-
         self.tray = SmartCardTrayIcon(self)
         self.tray.show_window_requested.connect(self._show_window)
         self.tray.lock_requested.connect(self._manual_lock)
@@ -80,12 +76,9 @@ class MainWindow(QMainWindow):
         self.tray.exit_requested.connect(self._exit_app)
         self.tray.show()
 
-        # Connect Controller to Screen Guard & Tray
-        self.controller.on_screen_guard_request = self._handle_guard_request
+        # Connect Controller to Tray
         self.controller.on_unlock_succeeded = self._handle_unlock_succeeded
         self.controller.on_unlock_failed = self._handle_unlock_failed
-
-        self.screen_guard_enabled = True
 
         self._init_ui()
         self._init_timer()
@@ -303,27 +296,23 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 18, 18, 18)
         layout.setSpacing(14)
 
-        desc = QLabel("将当前插入的 IC4442 卡片与 Windows 登录凭据进行安全绑定。\n凭据将使用 Windows DPAPI 和 AES-256-GCM 进行双层硬件绑定加密。")
+        desc = QLabel("将当前插入的 IC4442 卡片与 Windows Hello PIN 码进行安全绑定。\n拔卡时触发 Windows 原生安全锁屏，插卡时自动模拟输入 PIN 码极速解锁。")
         desc.setStyleSheet("color: #94a3b8; font-size: 13px; line-height: 1.4;")
         layout.addWidget(desc)
 
-        group = QGroupBox("Windows 凭据绑定")
+        group = QGroupBox("Windows Hello PIN 绑定")
         form = QGridLayout(group)
         form.setSpacing(12)
 
-        form.addWidget(QLabel("Windows 用户名:"), 0, 0)
+        form.addWidget(QLabel("Windows 账户名:"), 0, 0)
         self.input_username = QLineEdit(os.environ.get("USERNAME", ""))
         form.addWidget(self.input_username, 0, 1)
 
-        form.addWidget(QLabel("Windows 登录密码:"), 1, 0)
+        form.addWidget(QLabel("Windows Hello PIN 码:"), 1, 0)
         self.input_password = QLineEdit()
         self.input_password.setEchoMode(QLineEdit.Password)
-        self.input_password.setPlaceholderText("请输入你的 Windows 账户登录密码...")
+        self.input_password.setPlaceholderText("请输入您的开机 PIN 码（如 123456）...")
         form.addWidget(self.input_password, 1, 1)
-
-        form.addWidget(QLabel("自定义安全 PIN (可选):"), 2, 0)
-        self.input_pin = QLineEdit("123456")
-        self.input_pin.setPlaceholderText("4-8位数字，作为应急及二次验证...")
         form.addWidget(self.input_pin, 2, 1)
 
         layout.addWidget(group)
@@ -355,20 +344,15 @@ class MainWindow(QMainWindow):
         vbox_policy = QVBoxLayout(grp_policy)
         vbox_policy.setSpacing(12)
 
-        self.chk_lock_on_remove = QCheckBox("拔卡自动锁屏 (拔出 IC4442 卡片时立即锁定系统)")
+        self.chk_lock_on_remove = QCheckBox("拔卡自动锁屏 (拔出 IC4442 卡片时立即调用系统 LockWorkStation)")
         self.chk_lock_on_remove.setChecked(True)
         self.chk_lock_on_remove.stateChanged.connect(self._update_settings)
         vbox_policy.addWidget(self.chk_lock_on_remove)
 
-        self.chk_unlock_on_insert = QCheckBox("插卡自动解锁 (插入 IC4442 卡片并验证通过时自动解锁)")
+        self.chk_unlock_on_insert = QCheckBox("插卡自动解锁 (插入 IC4442 卡片时自动唤醒并注入 Windows Hello PIN 码)")
         self.chk_unlock_on_insert.setChecked(True)
         self.chk_unlock_on_insert.stateChanged.connect(self._update_settings)
         vbox_policy.addWidget(self.chk_unlock_on_insert)
-
-        self.chk_screen_guard = QCheckBox("启用全屏安全屏保锁 (Screen Guard 防旁路防护)")
-        self.chk_screen_guard.setChecked(True)
-        self.chk_screen_guard.stateChanged.connect(self._update_settings)
-        vbox_policy.addWidget(self.chk_screen_guard)
 
         layout.addWidget(grp_policy)
 
@@ -484,14 +468,13 @@ class MainWindow(QMainWindow):
 
     def _handle_enroll(self):
         username = self.input_username.text().strip()
-        password = self.input_password.text()
-        pin = self.input_pin.text().strip() or "123456"
+        pin = self.input_password.text().strip()
 
         if not username:
             QMessageBox.warning(self, "提示", "请输入 Windows 用户名！")
             return
-        if not password:
-            QMessageBox.warning(self, "提示", "请输入 Windows 登录密码！")
+        if not pin:
+            QMessageBox.warning(self, "提示", "请输入 Windows Hello PIN 码！")
             return
 
         reader = self.engine.current_reader or "Generic EMV Smartcard Reader 0"
@@ -510,7 +493,7 @@ class MainWindow(QMainWindow):
 
         success = self.vault.enroll(
             username=username,
-            password=password,
+            password=pin, # Save PIN as credential payload
             pin=pin,
             card_token=token_id,
             reader_info=reader
@@ -519,8 +502,8 @@ class MainWindow(QMainWindow):
         if success:
             self.input_password.clear()
             self._refresh_status()
-            self.log(f"已成功绑定用户 '{username}' 的登录凭据到当前卡片！")
-            QMessageBox.information(self, "成功", f"卡片已成功绑定到 Windows 用户 '{username}'！\n密码已通过 DPAPI + AES-256-GCM 双重加密保存。")
+            self.log(f"已成功绑定用户 '{username}' 的 Windows Hello PIN 码到当前卡片！")
+            QMessageBox.information(self, "成功", f"卡片已成功绑定到 Windows Hello PIN 码！\n凭据已通过 DPAPI + AES-256-GCM 双重加密保存。")
         else:
             QMessageBox.critical(self, "失败", "绑定凭据失败，请查看日志！")
 
@@ -532,7 +515,7 @@ class MainWindow(QMainWindow):
         res = QMessageBox.question(
             self,
             "确认清除",
-            "确定要清除已绑定的 Windows 解锁凭据吗？清除后插卡将无法解锁。",
+            "确定要清除已绑定的 Windows Hello PIN 凭据吗？清除后插卡将无法解锁。",
             QMessageBox.Yes | QMessageBox.No
         )
         if res == QMessageBox.Yes:
@@ -544,8 +527,7 @@ class MainWindow(QMainWindow):
     def _update_settings(self):
         self.controller.lock_on_removal = self.chk_lock_on_remove.isChecked()
         self.controller.unlock_on_insertion = self.chk_unlock_on_insert.isChecked()
-        self.screen_guard_enabled = self.chk_screen_guard.isChecked()
-        self.log(f"策略更新: 拔卡锁屏={self.controller.lock_on_removal}, 插卡解锁={self.controller.unlock_on_insertion}, 安全屏保={self.screen_guard_enabled}")
+        self.log(f"策略更新: 拔卡锁屏={self.controller.lock_on_removal}, 插卡解锁={self.controller.unlock_on_insertion}")
 
     def _toggle_autostart(self):
         enable = self.chk_autostart.isChecked()
@@ -567,22 +549,6 @@ class MainWindow(QMainWindow):
             self.header_status_badge.setStyleSheet("color: #94a3b8; font-weight: bold; font-size: 13px; background-color: #1e293b; padding: 6px 12px; border-radius: 12px;")
             self.engine.stop_monitoring()
             self.log("已暂停智能卡守护监听。")
-
-    def _handle_guard_request(self, activate: bool):
-        if activate and self.screen_guard_enabled:
-            self.screen_guard.activate_guard()
-        else:
-            self.screen_guard.deactivate_guard()
-
-    def _handle_pin_unlock(self, pin: str):
-        success = self.controller.manual_unlock_with_pin(pin)
-        if success:
-            self.log("应急 PIN 解锁成功！")
-            self.screen_guard.deactivate_guard()
-            self.tray.notify("解锁成功", "已通过应急 PIN 解锁系统。")
-        else:
-            self.log("应急 PIN 解锁失败：PIN 码错误。")
-            self.screen_guard.show_error("PIN 码错误，验证失败！")
 
     def _handle_unlock_succeeded(self, username: str):
         self.log(f"插卡解锁成功！已识别用户: {username}")
