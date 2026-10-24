@@ -2,6 +2,8 @@ use std::fs;
 use std::path::PathBuf;
 use std::ptr;
 
+const CRYPTPROTECT_LOCAL_MACHINE: u32 = 0x00000004;
+
 #[repr(C)]
 #[allow(non_snake_case)]
 struct DATA_BLOB {
@@ -38,20 +40,32 @@ unsafe extern "system" {
 }
 
 pub struct SecurityVault {
-    vault_file: PathBuf,
+    system_vault: PathBuf,
+    user_vault: PathBuf,
 }
 
 impl SecurityVault {
     pub fn new() -> Self {
+        // System-wide location (accessible by Windows Service / SYSTEM and Administrators)
+        let prog_data = std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".to_string());
+        let sys_dir = PathBuf::from(prog_data).join("SmartCardUnlock");
+        let _ = fs::create_dir_all(&sys_dir);
+        let system_vault = sys_dir.join("vault.dat");
+
+        // User-specific fallback location
         let local_app_data = std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".to_string());
-        let dir = PathBuf::from(local_app_data).join("SmartCardUnlock");
-        let _ = fs::create_dir_all(&dir);
-        let vault_file = dir.join("rust_vault.dat");
-        Self { vault_file }
+        let user_dir = PathBuf::from(local_app_data).join("SmartCardUnlock");
+        let _ = fs::create_dir_all(&user_dir);
+        let user_vault = user_dir.join("rust_vault.dat");
+
+        Self {
+            system_vault,
+            user_vault,
+        }
     }
 
     pub fn is_enrolled(&self) -> bool {
-        self.vault_file.exists() && fs::metadata(&self.vault_file).map(|m| m.len() > 0).unwrap_or(false)
+        self.load_pin().is_some()
     }
 
     pub fn save_pin(&self, pin: &str) -> bool {
@@ -65,6 +79,7 @@ impl SecurityVault {
             pbData: ptr::null_mut(),
         };
 
+        // Use CRYPTPROTECT_LOCAL_MACHINE so both SYSTEM service and elevated admin can decrypt
         let res = unsafe {
             CryptProtectData(
                 &mut in_blob,
@@ -72,7 +87,7 @@ impl SecurityVault {
                 ptr::null(),
                 ptr::null(),
                 ptr::null(),
-                0,
+                CRYPTPROTECT_LOCAL_MACHINE,
                 &mut out_blob,
             )
         };
@@ -85,17 +100,26 @@ impl SecurityVault {
             std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize)
         };
 
-        let write_ok = fs::write(&self.vault_file, slice).is_ok();
+        let mut success = false;
+        if fs::write(&self.system_vault, slice).is_ok() {
+            success = true;
+        }
+        if fs::write(&self.user_vault, slice).is_ok() {
+            success = true;
+        }
 
         unsafe {
             LocalFree(out_blob.pbData as *mut std::ffi::c_void);
         }
 
-        write_ok
+        success
     }
 
-    pub fn load_pin(&self) -> Option<String> {
-        let encrypted = fs::read(&self.vault_file).ok()?;
+    fn decrypt_file(&self, path: &PathBuf) -> Option<String> {
+        let encrypted = fs::read(path).ok()?;
+        if encrypted.is_empty() {
+            return None;
+        }
         let mut in_blob = DATA_BLOB {
             cbData: encrypted.len() as u32,
             pbData: encrypted.as_ptr() as *mut u8,
@@ -133,12 +157,17 @@ impl SecurityVault {
         pin_str
     }
 
-    pub fn clear(&self) -> bool {
-        if self.vault_file.exists() {
-            fs::remove_file(&self.vault_file).is_ok()
-        } else {
-            true
+    pub fn load_pin(&self) -> Option<String> {
+        if let Some(pin) = self.decrypt_file(&self.system_vault) {
+            return Some(pin);
         }
+        self.decrypt_file(&self.user_vault)
+    }
+
+    pub fn clear(&self) -> bool {
+        let _ = fs::remove_file(&self.system_vault);
+        let _ = fs::remove_file(&self.user_vault);
+        true
     }
 }
 

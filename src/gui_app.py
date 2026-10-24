@@ -365,6 +365,32 @@ class MainWindow(QMainWindow):
         vbox_sys.addWidget(self.chk_autostart)
 
         layout.addWidget(grp_system)
+
+        grp_service = QGroupBox("Windows 原生系统后台服务 (开机自启 / 突破锁屏 Winlogon 隔离)")
+        vbox_service = QVBoxLayout(grp_service)
+        vbox_service.setSpacing(10)
+
+        lbl_service_desc = QLabel(
+            "说明: Windows 锁屏界面受系统级安全隔离保护，普通用户进程无法跨桌面输入 PIN 码。\n"
+            "一键安装为系统服务后，将完全以 NT AUTHORITY\\SYSTEM 权限在后台静默运行，无需保持窗口开启即可实现插卡秒解！"
+        )
+        lbl_service_desc.setStyleSheet("color: #94a3b8; font-size: 12px; line-height: 1.4;")
+        vbox_service.addWidget(lbl_service_desc)
+
+        svc_btn_row = QHBoxLayout()
+        btn_install_svc = QPushButton("⚙️ 一键安装系统服务 (推荐)")
+        btn_install_svc.clicked.connect(self._install_service)
+        svc_btn_row.addWidget(btn_install_svc)
+
+        btn_uninstall_svc = QPushButton("🗑 卸载系统服务")
+        btn_uninstall_svc.setObjectName("secondaryBtn")
+        btn_uninstall_svc.clicked.connect(self._uninstall_service)
+        svc_btn_row.addWidget(btn_uninstall_svc)
+
+        svc_btn_row.addStretch()
+        vbox_service.addLayout(svc_btn_row)
+
+        layout.addWidget(grp_service)
         layout.addStretch()
         return widget
 
@@ -500,6 +526,15 @@ class MainWindow(QMainWindow):
         )
 
         if success:
+            # Also sync with Rust native engine vault
+            try:
+                import subprocess
+                rust_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "smartcard_unlock.exe"))
+                if os.path.exists(rust_bin):
+                    subprocess.run([rust_bin, "set-pin", pin], capture_output=True)
+            except Exception as e:
+                self.log(f"同步 Rust 凭据库提示: {e}")
+
             self.input_password.clear()
             self._refresh_status()
             self.log(f"已成功绑定用户 '{username}' 的 Windows Hello PIN 码到当前卡片！")
@@ -520,9 +555,34 @@ class MainWindow(QMainWindow):
         )
         if res == QMessageBox.Yes:
             self.vault.clear_vault()
+            try:
+                import subprocess
+                rust_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "bin", "smartcard_unlock.exe"))
+                if os.path.exists(rust_bin):
+                    subprocess.run([rust_bin, "clear"], capture_output=True)
+            except Exception:
+                pass
             self._refresh_status()
             self.log("已清空安全金库中的凭据。")
             QMessageBox.information(self, "提示", "已成功清除绑定。")
+
+    def _install_service(self):
+        try:
+            bat_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "install_service.bat"))
+            import subprocess
+            subprocess.Popen(["cmd.exe", "/c", bat_path], shell=True)
+            self.log("已启动系统服务安装向导 (UAC 提权)...")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"启动服务安装程序失败: {e}")
+
+    def _uninstall_service(self):
+        try:
+            bat_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "uninstall_service.bat"))
+            import subprocess
+            subprocess.Popen(["cmd.exe", "/c", bat_path], shell=True)
+            self.log("已启动系统服务卸载程序 (UAC 提权)...")
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"启动服务卸载程序失败: {e}")
 
     def _update_settings(self):
         self.controller.lock_on_removal = self.chk_lock_on_remove.isChecked()
