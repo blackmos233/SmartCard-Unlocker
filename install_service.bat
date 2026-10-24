@@ -2,11 +2,9 @@
 chcp 65001 >nul
 title Windows 插卡解锁 - 一键安装系统服务
 
-:: Check for administrative privileges
 net session >nul 2>&1
-if %errorLevel% neq 0 (
-    echo [提示] 正在请求 Windows 管理员权限以注册系统服务...
-    powershell -Command "Start-Process cmd.exe -ArgumentList '/c \"\"%~dpnx0\"\"' -Verb RunAs"
+if errorlevel 1 (
+    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 
