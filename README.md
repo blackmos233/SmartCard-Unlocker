@@ -76,23 +76,31 @@ flowchart TD
 
 ## 🚀 快速上手
 
-### 1. 配置 Windows 解锁密码
-双击运行项目根目录下的：
-```cmd
-set_password.bat
-```
-根据提示输入当前账户的 Windows 登录密码并回车。凭据将通过 Windows DPAPI 加密保存到安全存储库中。
+所有系统功能均已统一集成至原生 CLI 主程序 `bin\smartcard_unlock.exe`。
 
-### 2. 一键安装与注册服务
-以管理员身份运行：
-```cmd
-install_service.bat
+### 1. 配置 Windows 解锁密码
+在终端运行：
+```powershell
+.\bin\smartcard_unlock.exe set-pin
 ```
-脚本将自动：
+根据提示输入当前账户的 Windows 登录密码并回车。凭据将通过 Windows DPAPI 安全加密并存储到操作系统保护金库中。
+> 亦可通过直接传参设置：`.\bin\smartcard_unlock.exe set-pin "您的密码"`
+
+### 2. 一键安装并启动系统服务
+以管理员身份打开终端运行：
+```powershell
+.\bin\smartcard_unlock.exe install-service
+```
+程序将自动：
 1. 注册并部署 `SmartCardCredentialProvider.dll` 至系统凭据提供程序注册表；
 2. 安装并启动 `SmartCardUnlock` Windows 后台自启服务。
 
-### 3. 验证功能
+### 3. 查看系统与硬件运行状态
+```powershell
+.\bin\smartcard_unlock.exe status
+```
+
+### 4. 验证功能
 - **测试锁屏**：拔出 IC4442 芯片卡，系统在 0.1 秒内立即锁定屏幕；
 - **测试解锁**：将卡片插入读卡器，系统将在 0.1 秒内自动验证身份并原生进入桌面；
 - **测试热插拔**：拔下读卡器 USB，系统立即锁定；重新插上读卡器，服务自动重连就绪。
@@ -105,7 +113,7 @@ install_service.bat
 .
 ├── bin/                               # 预编译原生组件
 │   ├── SmartCardCredentialProvider.dll # Windows 原生凭据提供程序 COM DLL
-│   └── smartcard_unlock.exe           # 系统服务与管理主程序
+│   └── smartcard_unlock.exe           # 系统服务与管理主程序 (CLI / TUI)
 ├── credential_provider/               # C++ 原生凭据提供程序源码 (MinGW-w64)
 │   ├── CClassFactory.cpp / .h         # COM 类工厂
 │   ├── CSmartCardProvider.cpp / .h    # 凭据提供程序生命周期与监听
@@ -123,12 +131,9 @@ install_service.bat
 │   └── Cargo.toml
 ├── tools/                             # 硬件诊断工具
 │   └── rts_4442_tool.py               # IC4442 底层寄存器直读诊断脚本
-├── build_credprov.bat                 # 编译 Credential Provider DLL
-├── install_service.bat                # 一键安装服务
-├── uninstall_service.bat              # 一键卸载服务
-├── update_service.bat                 # 一键更新部署
-├── set_password.bat                   # 设置/更新解锁密码
-└── run_console.bat                    # 前台交互式诊断模式
+├── build.bat                          # 统一工程自动化编译脚本 (C++ + Rust)
+├── LICENSE                            # MIT 开源许可证
+└── README.md                          # 项目使用与架构说明
 ```
 
 ---
@@ -139,17 +144,12 @@ install_service.bat
 - **Rust** 1.75+（使用 MSVC 或 GNU 工具链均可）
 - **MinGW-w64**（包含 `g++` 且已加入 PATH，用于编译 C++ COM DLL）
 
-### 编译步骤
-```powershell
-# 1. 编译 C++ 原生凭据提供程序
-.\build_credprov.bat
-
-# 2. 编译 Rust 后台核心服务
-cd rust-core
-cargo build --release
-cd ..
-copy /y rust-core\target\release\smartcard_unlock.exe bin\smartcard_unlock.exe
+### 一键构建
+直接运行项目根目录下的自动化构建脚本：
+```cmd
+build.bat
 ```
+脚本将全自动检测 MinGW 与 Cargo 工具链，完成 `SmartCardCredentialProvider.dll` 与 `smartcard_unlock.exe` 的构建并输出到 `bin/` 目录。
 
 ---
 

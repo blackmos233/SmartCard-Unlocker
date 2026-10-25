@@ -11,9 +11,29 @@ use scard::SmartCardEngine;
 use vault::SecurityVault;
 
 fn print_banner() {
-    println!("=========================");
-    println!("  Windows仿智能卡解锁工具 ");
-    println!("=========================");
+    println!("==============================================================");
+    println!("  Windows 智能卡解锁系统 (RTS5169 + IC4442) [Rust 原生极速引擎] ");
+    println!("==============================================================");
+}
+
+fn print_help() {
+    print_banner();
+    println!("用法:");
+    println!("  smartcard_unlock.exe [命令] [参数]\n");
+    println!("命令列表:");
+    println!("  set-pin [密码]       配置或更新 Windows 解锁密码 (不带参数则进入交互输入)");
+    println!("  status               查看当前硬件、卡片、服务与凭据提供程序状态");
+    println!("  install-service      一键安装并启动后台服务 (需要管理员权限)");
+    println!("  uninstall-service    停止并卸载后台服务 (需要管理员权限)");
+    println!("  start-service        启动已安装的后台服务 (需要管理员权限)");
+    println!("  stop-service         停止后台服务 (需要管理员权限)");
+    println!("  register-credprov    注册系统级 Windows 原生凭据提供程序 (需要管理员权限)");
+    println!("  run | daemon         前台运行实时插拔卡守护模式");
+    println!("  lock-now             立即触发原生工作站锁屏");
+    println!("  clear                清除已保存的凭据数据");
+    println!("  help | --help | -h   显示本帮助信息\n");
+    println!("说明:");
+    println!("  直接运行程序 (不带任何参数) 将进入交互式控制台菜单。");
 }
 
 fn run_daemon(engine: &mut SmartCardEngine, vault: &SecurityVault) {
@@ -194,6 +214,10 @@ fn main() {
 
     if args.len() > 1 {
         match args[1].as_str() {
+            "help" | "--help" | "-h" | "/?" => {
+                print_help();
+                return;
+            }
             "service-run" => {
                 service::run_service();
                 return;
