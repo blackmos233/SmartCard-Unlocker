@@ -54,6 +54,7 @@ public:
     // Internal triggers
     void SetCardInserted(bool inserted);
     void TriggerAutoLogon();
+    bool IsCardInserted() const { return m_bCardInserted; }
 
 private:
     LONG m_cRef;

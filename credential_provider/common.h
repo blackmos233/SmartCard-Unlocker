@@ -58,6 +58,58 @@ inline HRESULT CoTaskMemAllocString(PCWSTR pszSource, LPWSTR* ppszDest) {
     return S_OK;
 }
 
+inline bool IsHardwareCardPresent() {
+    SCARDCONTEXT hCtx = 0;
+    LONG lRes = SCardEstablishContext(SCARD_SCOPE_SYSTEM, NULL, NULL, &hCtx);
+    if (lRes != SCARD_S_SUCCESS) {
+        lRes = SCardEstablishContext(SCARD_SCOPE_USER, NULL, NULL, &hCtx);
+    }
+    if (lRes != SCARD_S_SUCCESS || hCtx == 0) {
+        return false;
+    }
+
+    DWORD cchReaders = SCARD_AUTOALLOCATE;
+    LPWSTR pmszReaders = NULL;
+    lRes = SCardListReadersW(hCtx, NULL, (LPWSTR)&pmszReaders, &cchReaders);
+    if (lRes != SCARD_S_SUCCESS || !pmszReaders) {
+        SCardReleaseContext(hCtx);
+        return false;
+    }
+
+    WCHAR targetReader[256] = { 0 };
+    LPCWSTR p = pmszReaders;
+    while (*p) {
+        std::wstring rname(p);
+        if (rname.find(L"EMV") != std::wstring::npos ||
+            rname.find(L"RTS") != std::wstring::npos ||
+            rname.find(L"Realtek") != std::wstring::npos ||
+            targetReader[0] == 0) {
+            wcscpy_s(targetReader, p);
+        }
+        p += wcslen(p) + 1;
+    }
+    SCardFreeMemory(hCtx, pmszReaders);
+
+    if (targetReader[0] == 0) {
+        SCardReleaseContext(hCtx);
+        return false;
+    }
+
+    SCARD_READERSTATEW state;
+    ZeroMemory(&state, sizeof(state));
+    state.szReader = targetReader;
+    state.dwCurrentState = SCARD_STATE_UNAWARE;
+
+    lRes = SCardGetStatusChangeW(hCtx, 50, &state, 1);
+    bool present = false;
+    if (lRes == SCARD_S_SUCCESS) {
+        present = (state.dwEventState & SCARD_STATE_PRESENT) != 0;
+    }
+
+    SCardReleaseContext(hCtx);
+    return present;
+}
+
 struct StoredCredentials {
     std::wstring username;
     std::wstring domain;

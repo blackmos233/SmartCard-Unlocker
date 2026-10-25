@@ -162,7 +162,8 @@ HRESULT CSmartCardProvider::GetCredentialCount(DWORD* pdwCount, DWORD* pdwDefaul
 
     *pdwCount = 1;
     *pdwDefault = 0;
-    *pbAutoLogonWithDefault = m_bAutoLogon ? TRUE : FALSE;
+    bool canAuto = m_bAutoLogon && (m_pCredential != NULL && m_pCredential->IsCardInserted());
+    *pbAutoLogonWithDefault = canAuto ? TRUE : FALSE;
 
     // Reset auto-logon trigger to prevent infinite spinning loops on authentication failure
     m_bAutoLogon = false;

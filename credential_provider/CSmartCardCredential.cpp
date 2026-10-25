@@ -10,6 +10,11 @@ CSmartCardCredential::CSmartCardCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
     m_bAutoLogon(false),
     m_statusText(L"请插入 IC4442 卡片自动解锁")
 {
+    // 初始化时探测物理智能卡当前真实在位状态
+    m_bCardInserted = IsHardwareCardPresent();
+    if (m_bCardInserted) {
+        m_statusText = L"IC4442 卡片已插入，正在验证身份...";
+    }
     DllAddRef();
 }
 
@@ -70,7 +75,7 @@ HRESULT CSmartCardCredential::UnAdvise() {
 
 HRESULT CSmartCardCredential::SetSelected(BOOL* pbAutoLogon) {
     if (pbAutoLogon) {
-        *pbAutoLogon = m_bAutoLogon ? TRUE : FALSE;
+        *pbAutoLogon = (m_bAutoLogon && m_bCardInserted) ? TRUE : FALSE;
         m_bAutoLogon = false; // Reset to avoid re-triggering loop
     }
     return S_OK;
@@ -91,7 +96,8 @@ HRESULT CSmartCardCredential::GetFieldState(DWORD dwFieldID, CREDENTIAL_PROVIDER
         *pcpfis = CPFIS_NONE;
         return S_OK;
     case SFI_SUBMIT:
-        *pcpfs = CPFS_DISPLAY_IN_SELECTED_TILE;
+        // 关键防护：未插卡状态下坚决隐藏提交箭头，插卡在位后才允许显示
+        *pcpfs = m_bCardInserted ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         *pcpfis = CPFIS_NONE;
         return S_OK;
     default:
@@ -127,6 +133,9 @@ HRESULT CSmartCardCredential::GetCheckboxValue(DWORD dwFieldID, BOOL* pbChecked,
 HRESULT CSmartCardCredential::GetSubmitButtonValue(DWORD dwFieldID, DWORD* pdwAdjacentTo) {
     if (!pdwAdjacentTo) return E_POINTER;
     if (dwFieldID == SFI_SUBMIT) {
+        if (!m_bCardInserted) {
+            return E_NOTIMPL;
+        }
         *pdwAdjacentTo = SFI_STATUS;
         return S_OK;
     }
@@ -172,7 +181,29 @@ HRESULT CSmartCardCredential::GetSerialization(
     *pcpsiOptionalStatusIcon = CPSI_NONE;
     ZeroMemory(pcpcs, sizeof(*pcpcs));
 
-    LogCredProv("GetSerialization 调用触发，正在读取凭据库...");
+    LogCredProv("GetSerialization 调用触发，正在进行智能卡硬件物理在位安全校验...");
+
+    // 【核心安全防线】：双重硬件物理在位校验！
+    // 无论任何原因调用 GetSerialization，只要物理智能卡未插入，坚决拒绝提供任何密码凭据！
+    bool hwPresent = IsHardwareCardPresent();
+    if (!m_bCardInserted || !hwPresent) {
+        m_bCardInserted = false;
+        m_bAutoLogon = false;
+        m_statusText = L"请插入 IC4442 卡片自动解锁";
+        LogCredProv("【安全拦截】检测到物理卡片未插入！坚决拒绝提供任何凭据数据！");
+
+        CoTaskMemAllocString(L"未检测到 IC4442 智能卡，请先插入卡片！", ppszOptionalStatusText);
+        *pcpsiOptionalStatusIcon = CPSI_ERROR;
+        *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
+
+        if (m_pEvents) {
+            m_pEvents->SetFieldString(this, SFI_STATUS, m_statusText.c_str());
+            m_pEvents->SetFieldState(this, SFI_SUBMIT, CPFS_HIDDEN);
+        }
+        return S_OK;
+    }
+
+    LogCredProv("硬件智能卡已确认在位，正在读取凭据库...");
 
     StoredCredentials creds = ReadVaultCredentials();
     if (!creds.isValid) {
@@ -340,6 +371,8 @@ void CSmartCardCredential::SetCardInserted(bool inserted) {
     }
 
     if (m_pEvents) {
+        m_pEvents->SetFieldString(this, SFI_STATUS, m_statusText.c_str());
+        m_pEvents->SetFieldState(this, SFI_SUBMIT, inserted ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN);
         m_pEvents->SetFieldState(this, SFI_STATUS, CPFS_DISPLAY_IN_SELECTED_TILE);
     }
 }
@@ -350,6 +383,8 @@ void CSmartCardCredential::TriggerAutoLogon() {
     m_statusText = L"智能卡认证中...";
 
     if (m_pEvents) {
+        m_pEvents->SetFieldString(this, SFI_STATUS, m_statusText.c_str());
+        m_pEvents->SetFieldState(this, SFI_SUBMIT, CPFS_DISPLAY_IN_SELECTED_TILE);
         m_pEvents->SetFieldState(this, SFI_STATUS, CPFS_DISPLAY_IN_SELECTED_TILE);
     }
 }
