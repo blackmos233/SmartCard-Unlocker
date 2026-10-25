@@ -138,7 +138,7 @@ inline StoredCredentials ReadVaultCredentials() {
     ifs.close();
 
     if (encrypted.empty()) {
-        LogCredProv("凭据库文件为空！");
+        LogCredProv("凭据库文件为空");
         return creds;
     }
 

@@ -242,7 +242,7 @@ pub fn register_credential_provider_dll() -> bool {
             if let Some(reg_fn) = p_fn {
                 let reg: extern "system" fn() -> i32 = std::mem::transmute(reg_fn);
                 let hr = reg();
-                log_service(&format!("SmartCardCredentialProvider 成功注册到系统！HRESULT = 0x{:08X}", hr));
+                log_service(&format!("SmartCardCredentialProvider 成功注册到系统 HRESULT = 0x{:08X}", hr));
                 FreeLibrary(h_module);
                 return hr == 0;
             }
@@ -274,7 +274,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
     };
     unsafe { SetServiceStatus(handle, &running_status); }
 
-    log_service("=== SmartCardUnlock 服务已启动 (SYSTEM 权限) ===");
+    log_service("=== SmartCardUnlock 服务已启动 ===");
 
     // 确保原生凭据提供程序向 Windows 注册
     register_credential_provider_dll();
@@ -305,12 +305,12 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
         let readers = engine.list_readers();
         if readers.is_empty() {
             if !last_reader.is_empty() {
-                log_service("[硬件断开] 智能卡读卡器 USB 已断开连接，进入等待重连状态...");
+                log_service("[硬件断开] 读卡器 USB 已断开连接，进入重连状态...");
                 last_reader.clear();
                 if let Some(true) = last_present {
                     last_present = Some(false);
                     let session_id = get_active_session_id();
-                    log_service(&format!("读卡器拔出，触发安全锁屏 (会话 ID: {})...", session_id));
+                    log_service(&format!("读卡器拔出，触发锁屏 (会话 ID: {})...", session_id));
                     lock_session(session_id);
                 }
             }
@@ -328,7 +328,7 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
 
         if target_reader != &last_reader {
             last_reader = target_reader.clone();
-            log_service(&format!("[硬件重连] 成功发现/重连智能卡读卡器: {}", last_reader));
+            log_service(&format!("[硬件重连] 成功发现/重连读卡器: {}", last_reader));
         }
 
         let (present, _event_state) = engine.get_card_status(target_reader);
@@ -344,14 +344,14 @@ unsafe extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
                     let session_id = get_active_session_id();
 
                     if present {
-                        log_service(&format!("[事件] 检测到 IC4442 卡片插入！(目标会话: {})", session_id));
+                        log_service(&format!("[事件] 检测到卡片插入！(目标会话: {})", session_id));
                         if is_session_locked(session_id) {
-                            log_service("系统处于锁定状态，由系统原生 SmartCardCredentialProvider 处理 Windows 原生认证解锁。");
+                            log_service("系统处于锁定状态，处理解锁。");
                         } else {
                             log_service("系统处于未锁定状态，无需执行解锁。");
                         }
                     } else {
-                        log_service(&format!("[事件] 检测到 IC4442 卡片拔出！立即锁定会话 {}...", session_id));
+                        log_service(&format!("[事件] 检测到卡片拔出！立即锁定会话 {}...", session_id));
                         let locked = lock_session(session_id);
                         log_service(&format!("锁屏调用结果: {}", if locked { "成功" } else { "触发失败" }));
                     }
@@ -432,12 +432,12 @@ pub fn install_service() -> Result<(), String> {
         let err = unsafe { GetLastError() };
         unsafe { CloseServiceHandle(scm); }
         if err == 1073 {
-            return Err("服务已存在，若要更新请先执行卸载服务 (uninstall-service)".to_string());
+            return Err("服务已存在，若要更新请先执行卸载服务".to_string());
         }
         return Err(format!("创建服务失败 (错误代码: {})", err));
     }
 
-    let desc = to_wide("基于 RTS5169 读卡器和 IC4442 卡片的 Windows 原生插拔卡自动锁屏与 Hello PIN 自动解锁服务。");
+    let desc = to_wide("基于 RTS5169 读卡器和 IC4442 卡片的 Windows 原生插拔卡自动锁屏与自动解锁服务。");
     let mut sd = SERVICE_DESCRIPTIONW {
         lpDescription: desc.as_ptr() as *mut u16,
     };

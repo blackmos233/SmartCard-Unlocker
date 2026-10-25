@@ -8,12 +8,12 @@ CSmartCardCredential::CSmartCardCredential(CREDENTIAL_PROVIDER_USAGE_SCENARIO cp
     m_pEvents(NULL),
     m_bCardInserted(false),
     m_bAutoLogon(false),
-    m_statusText(L"请插入 IC4442 卡片自动解锁")
+    m_statusText(L"请插入卡片进行解锁")
 {
     // 初始化时探测物理智能卡当前真实在位状态
     m_bCardInserted = IsHardwareCardPresent();
     if (m_bCardInserted) {
-        m_statusText = L"IC4442 卡片已插入，正在验证身份...";
+        m_statusText = L"卡片已插入，按下回车或提交箭头以解锁";
     }
     DllAddRef();
 }
@@ -96,7 +96,6 @@ HRESULT CSmartCardCredential::GetFieldState(DWORD dwFieldID, CREDENTIAL_PROVIDER
         *pcpfis = CPFIS_NONE;
         return S_OK;
     case SFI_SUBMIT:
-        // 关键防护：未插卡状态下坚决隐藏提交箭头，插卡在位后才允许显示
         *pcpfs = m_bCardInserted ? CPFS_DISPLAY_IN_SELECTED_TILE : CPFS_HIDDEN;
         *pcpfis = CPFIS_NONE;
         return S_OK;
@@ -181,18 +180,16 @@ HRESULT CSmartCardCredential::GetSerialization(
     *pcpsiOptionalStatusIcon = CPSI_NONE;
     ZeroMemory(pcpcs, sizeof(*pcpcs));
 
-    LogCredProv("GetSerialization 调用触发，正在进行智能卡硬件物理在位安全校验...");
+    LogCredProv("GetSerialization 调用触发，正在进行智能卡校验...");
 
-    // 【核心安全防线】：双重硬件物理在位校验！
-    // 无论任何原因调用 GetSerialization，只要物理智能卡未插入，坚决拒绝提供任何密码凭据！
     bool hwPresent = IsHardwareCardPresent();
     if (!m_bCardInserted || !hwPresent) {
         m_bCardInserted = false;
         m_bAutoLogon = false;
-        m_statusText = L"请插入 IC4442 卡片自动解锁";
-        LogCredProv("【安全拦截】检测到物理卡片未插入！坚决拒绝提供任何凭据数据！");
+        m_statusText = L"请插入卡片进行解锁";
+        LogCredProv("卡片未插入");
 
-        CoTaskMemAllocString(L"未检测到 IC4442 智能卡，请先插入卡片！", ppszOptionalStatusText);
+        CoTaskMemAllocString(L"未检测到卡，请先插入卡片", ppszOptionalStatusText);
         *pcpsiOptionalStatusIcon = CPSI_ERROR;
         *pcpgsr = CPGSR_NO_CREDENTIAL_FINISHED;
 
@@ -203,7 +200,7 @@ HRESULT CSmartCardCredential::GetSerialization(
         return S_OK;
     }
 
-    LogCredProv("硬件智能卡已确认在位，正在读取凭据库...");
+    LogCredProv("智能卡已确认，正在读取凭据库...");
 
     StoredCredentials creds = ReadVaultCredentials();
     if (!creds.isValid) {
@@ -345,10 +342,10 @@ HRESULT CSmartCardCredential::ReportResult(
     m_bAutoLogon = false;
 
     if (ntsStatus == 0) {
-        LogCredProv("认证成功，系统会话已解锁！");
+        LogCredProv("认证成功，已解锁");
     } else {
-        LogCredProv("认证失败，请检查凭据是否与 Windows 账户匹配。");
-        CoTaskMemAllocString(L"智能卡凭据认证失败，请重试或检查绑定设置。", ppszOptionalStatusText);
+        LogCredProv("认证失败，请检查凭据是否与 Windows 账户匹配");
+        CoTaskMemAllocString(L"智能卡凭据认证失败，请重试或检查绑定设置", ppszOptionalStatusText);
         if (pcpsiOptionalStatusIcon) {
             *pcpsiOptionalStatusIcon = CPSI_ERROR;
         }
@@ -365,9 +362,9 @@ HRESULT CSmartCardCredential::GetUserSid(LPWSTR* sid) {
 void CSmartCardCredential::SetCardInserted(bool inserted) {
     m_bCardInserted = inserted;
     if (inserted) {
-        m_statusText = L"IC4442 卡片已插入，正在验证身份...";
+        m_statusText = L"卡片已插入，按下回车或提交箭头以解锁";
     } else {
-        m_statusText = L"请插入 IC4442 卡片自动解锁";
+        m_statusText = L"请插入卡片进行解锁";
     }
 
     if (m_pEvents) {

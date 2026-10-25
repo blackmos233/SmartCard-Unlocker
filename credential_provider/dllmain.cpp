@@ -76,7 +76,7 @@ STDAPI DllRegisterServer(void) {
     hr = CreateRegKeyAndSetValue(HKEY_LOCAL_MACHINE, szKey, NULL, s_szProviderName);
     if (FAILED(hr)) return hr;
 
-    LogCredProv("DllRegisterServer: 成功向系统注册 SmartCardCredentialProvider！");
+    LogCredProv("DllRegisterServer: 成功向系统注册 SmartCardCredentialProvider");
     return S_OK;
 }
 
@@ -91,6 +91,6 @@ STDAPI DllUnregisterServer(void) {
     swprintf_s(szKey, MAX_PATH, L"SOFTWARE\\Classes\\CLSID\\%ls", s_szCLSID);
     RegDeleteTreeW(HKEY_LOCAL_MACHINE, szKey);
 
-    LogCredProv("DllUnregisterServer: 成功从系统注销 SmartCardCredentialProvider。");
+    LogCredProv("DllUnregisterServer: 成功从系统注销 SmartCardCredentialProvider");
     return S_OK;
 }

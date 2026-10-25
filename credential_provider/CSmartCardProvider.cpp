@@ -96,7 +96,7 @@ HRESULT CSmartCardProvider::SetSerialization(const CREDENTIAL_PROVIDER_CREDENTIA
 }
 
 HRESULT CSmartCardProvider::Advise(ICredentialProviderEvents* pcpe, UINT_PTR upAdviseContext) {
-    LogCredProv("Advise: 注册事件监听，启动智能卡状态监控线程...");
+    LogCredProv("Advise: 注册事件监听，启动状态监控线程...");
     if (m_pEvents) {
         m_pEvents->Release();
     }
@@ -118,7 +118,7 @@ HRESULT CSmartCardProvider::Advise(ICredentialProviderEvents* pcpe, UINT_PTR upA
 }
 
 HRESULT CSmartCardProvider::UnAdvise() {
-    LogCredProv("UnAdvise: 停止智能卡监听线程...");
+    LogCredProv("UnAdvise: 停止监听线程...");
     if (m_hStopEvent) {
         SetEvent(m_hStopEvent);
     }
@@ -184,7 +184,7 @@ HRESULT CSmartCardProvider::GetCredentialAt(DWORD dwIndex, ICredentialProviderCr
 
 void CSmartCardProvider::MonitorCardLoop() {
     SCARDCONTEXT hContext = 0;
-    LogCredProv("智能卡监控线程运行中 (PC/SC WinSCard)");
+    LogCredProv("监控线程运行中");
 
     WCHAR targetReader[256] = {0};
     bool lastPresent = false;
@@ -227,7 +227,7 @@ void CSmartCardProvider::MonitorCardLoop() {
 
                 if (targetReader[0] != 0) {
                     char buf[300];
-                    sprintf_s(buf, "[硬件连接] 成功发现智能卡读卡器: %ls", targetReader);
+                    sprintf_s(buf, "成功发现智能卡读卡器: %ls", targetReader);
                     LogCredProv(buf);
                     initialCheck = true; // reset initial check for freshly connected reader
                 }
@@ -261,7 +261,7 @@ void CSmartCardProvider::MonitorCardLoop() {
                 }
             } else if (isPresent != lastPresent) {
                 lastPresent = isPresent;
-                LogCredProv(isPresent ? "【硬件事件】检测到 IC4442 卡片插入！" : "【硬件事件】检测到 IC4442 卡片拔出。");
+                LogCredProv(isPresent ? "【硬件事件】检测到卡片插入" : "【硬件事件】检测到卡片拔出");
 
                 if (m_pCredential) {
                     m_pCredential->SetCardInserted(isPresent);
@@ -275,14 +275,14 @@ void CSmartCardProvider::MonitorCardLoop() {
                     }
 
                     if (m_pEvents) {
-                        LogCredProv("向 LogonUI 派发 CredentialsChanged 事件，触发系统自动解锁...");
+                        LogCredProv("向 LogonUI 派发 CredentialsChanged 事件，触发自动解锁...");
                         m_pEvents->CredentialsChanged(m_upAdviseContext);
                     }
                 }
             }
         } else {
             // Reader error or detached (SCARD_E_UNKNOWN_READER, SCARD_E_READER_UNAVAILABLE, etc.)
-            LogCredProv("[硬件断开] 读卡器已拔出或断开，进入等待重连状态...");
+            LogCredProv("[硬件断开] 读卡器已拔出或断开，进入重连状态...");
             targetReader[0] = 0;
             if (lastPresent) {
                 lastPresent = false;
@@ -302,5 +302,5 @@ void CSmartCardProvider::MonitorCardLoop() {
         SCardReleaseContext(hContext);
         hContext = 0;
     }
-    LogCredProv("智能卡监控线程安全退出。");
+    LogCredProv("监控线程安全退出");
 }
