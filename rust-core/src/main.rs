@@ -201,12 +201,6 @@ fn main() {
                 service::run_service();
                 return;
             }
-            "inject-pin" => {
-                if args.len() > 2 {
-                    lock::inject_pin_on_current_desktop(&args[2]);
-                }
-                return;
-            }
             "lock-now" => {
                 let session_id = lock::get_active_session_id();
                 lock::lock_session(session_id);
