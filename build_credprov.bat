@@ -1,8 +1,20 @@
 @echo off
 setlocal
 
-set GPP=D:\work\path\mingw64\bin\g++.exe
-if not exist "%GPP%" set GPP=g++
+:: Detect MinGW g++ compiler
+set GPP=g++
+where g++ >nul 2>&1
+if %ERRORLEVEL% NEQ 0 (
+    if exist "C:\mingw64\bin\g++.exe" (
+        set GPP=C:\mingw64\bin\g++.exe
+    ) else if exist "D:\work\path\mingw64\bin\g++.exe" (
+        set GPP=D:\work\path\mingw64\bin\g++.exe
+    ) else (
+        echo [ERROR] MinGW g++ compiler not found in PATH or standard directories!
+        echo Please install MinGW-w64 or add g++.exe to your system PATH.
+        exit /b 1
+    )
+)
 
 if not exist bin mkdir bin
 

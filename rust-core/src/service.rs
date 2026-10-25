@@ -211,14 +211,14 @@ pub fn register_credential_provider_dll() -> bool {
     let _ = fs::create_dir_all(&sys_dir);
     let dll_dest = sys_dir.join("SmartCardCredentialProvider.dll");
 
-    // Check workspace bin path
+    // Check potential source DLL paths relative to current executable or working directory
+    let cur_exe = std::env::current_exe().unwrap_or_default();
+    let cur_dir = cur_exe.parent().unwrap_or(&cur_exe);
     let src_candidates = [
-        PathBuf::from(r"D:\work\SmartCard\bin\SmartCardCredentialProvider.dll"),
-        std::env::current_exe()
-            .unwrap_or_default()
-            .parent()
-            .unwrap_or(&PathBuf::new())
-            .join("SmartCardCredentialProvider.dll"),
+        cur_dir.join("SmartCardCredentialProvider.dll"),
+        cur_dir.join("bin").join("SmartCardCredentialProvider.dll"),
+        PathBuf::from(r".\bin\SmartCardCredentialProvider.dll"),
+        PathBuf::from(r".\SmartCardCredentialProvider.dll"),
     ];
 
     for src in &src_candidates {

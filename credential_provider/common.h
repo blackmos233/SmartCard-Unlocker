@@ -188,11 +188,16 @@ inline StoredCredentials ReadVaultCredentials() {
         DWORD sessId = WTSGetActiveConsoleSessionId();
         LPWSTR pUser = NULL;
         DWORD bytesRet = 0;
-        if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessId, WTSUserName, &pUser, &bytesRet) && pUser) {
+        if (WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, sessId, WTSUserName, &pUser, &bytesRet) && pUser && pUser[0] != 0) {
             creds.username = pUser;
             WTSFreeMemory(pUser);
         } else {
-            creds.username = L"black"; // Fallback to current detected user
+            // Fallback: Query system GetUserNameW
+            WCHAR sysUser[256] = {0};
+            DWORD sysUserLen = 256;
+            if (GetUserNameW(sysUser, &sysUserLen) && sysUser[0] != 0) {
+                creds.username = sysUser;
+            }
         }
     }
 

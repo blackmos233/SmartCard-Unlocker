@@ -86,7 +86,19 @@ class Rts4442Tool:
             print(f"[警告] DIRECT 连接返回: 0x{res & 0xFFFFFFFF:08X}")
 
         # 3. Card state analysis
-        from src.smartcard_engine import SCARD_READERSTATEW, SCARD_STATE_PRESENT, SCARD_STATE_MUTE
+        class SCARD_READERSTATEW(ctypes.Structure):
+            _fields_ = [
+                ("szReader", wintypes.LPCWSTR),
+                ("pvUserData", ctypes.c_void_p),
+                ("dwCurrentState", wintypes.DWORD),
+                ("dwEventState", wintypes.DWORD),
+                ("cbAtr", wintypes.DWORD),
+                ("rgbAtr", ctypes.c_byte * 36),
+            ]
+
+        SCARD_STATE_PRESENT = 0x00000020
+        SCARD_STATE_MUTE = 0x00000200
+
         rs = SCARD_READERSTATEW()
         rs.szReader = target
         rs.dwCurrentState = 0

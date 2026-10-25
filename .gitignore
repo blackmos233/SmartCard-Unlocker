@@ -1,9 +1,45 @@
+# Build and Binary Artifacts
+rust-core/target/
+*.obj
+*.o
+*.pdb
+*.exp
+*.lib
+*.ilk
+
+# Logs and runtime traces
+*.log
+credprov.log
+service.log
+injector.log
+
+# Sensitive credentials & vault files (CRITICAL: Never commit credentials)
+*.dat
+vault.dat
+rust_vault.dat
+*.key
+*.pem
+*.pfx
+
+# Temporary and local test files
+scratch/
+.pytest_cache/
+*.tmp
+*.bak
+*.swp
+
+# Python cache (if any script executed)
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
-.pytest_cache/
-*.log
-scratch/
-rust-core/target/
 
+# IDE and Editor configuration
+.vscode/
+.idea/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+.vs/
+.gemini/
